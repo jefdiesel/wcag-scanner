@@ -32,7 +32,7 @@ project-root/
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/yourusername/wcag-accessibility-scanner.git
+git clone https://github.com/jefdiesel/wcag-scanner.git
 cd wcag-accessibility-scanner
 ```
 
