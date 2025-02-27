@@ -3,6 +3,13 @@ const path = require('path');
 const { runAsync } = require('../db/db');
 const logger = require('../utils/logger');
 
+// Import all analyzers
+const { analyzePdf } = require('./analyzers/pdfAnalyzer');
+const { analyzeMediaContent } = require('./analyzers/mediaAnalyzer');
+const { analyzeKeyboardNavigation } = require('./analyzers/keyboardAnalyzer');
+const { identifyManualReviewItems } = require('./analyzers/manualReviewAnalyzer');
+const { checkAccessibilityStatement } = require('./analyzers/accessibilityStatementAnalyzer');
+
 /**
  * Performs WCAG accessibility testing on a page
  * @param {import('playwright').Page} page - Playwright page object
@@ -11,16 +18,38 @@ const logger = require('../utils/logger');
  */
 async function testAccessibility(page, url) {
   try {
+    // Check if URL is a PDF
+    const isPdf = url.toLowerCase().endsWith('.pdf');
+    if (isPdf) {
+      return await analyzePdf(url, page.context().browser());
+    }
+
     // Inject axe-core library
     await page.addScriptTag({
       path: require.resolve('axe-core')
     });
 
-    // Run axe-core analysis
-    const results = await page.evaluate(async () => {
+    // Run axe-core analysis with WCAG 2.2 checks
+    const axeResults = await page.evaluate(async () => {
       return await new Promise((resolve) => {
-        window.axe.run(document, {
+        window.axe.configure({
           reporter: 'v2',
+          // Enable all rules for maximum coverage including WCAG 2.2
+          rules: [
+            // Enable WCAG 2.2 specific rules
+            { id: 'focus-visible-enhanced', enabled: true },
+            { id: 'target-size', enabled: true },
+            { id: 'dragging-movements', enabled: true },
+            { id: 'accessible-authentication', enabled: true },
+            { id: 'redundant-entry', enabled: true },
+            { id: 'help-available', enabled: true },
+            { id: 'focus-appearance-enhanced', enabled: true },
+            // Enable all rules
+            { id: '*', enabled: true }
+          ]
+        });
+        
+        window.axe.run(document, {
           runOnly: {
             type: 'tag',
             values: ['wcag2a', 'wcag2aa', 'wcag2aaa', 'best-practice']
@@ -32,45 +61,63 @@ async function testAccessibility(page, url) {
       });
     });
 
-    // Create violation counts to be used in the UI
+    // Run additional specialized analyzers
+    const mediaResults = await analyzeMediaContent(page, url);
+    const keyboardResults = await analyzeKeyboardNavigation(page, url);
+    const manualReviewResults = await identifyManualReviewItems(page, url);
+    const a11yStatementResults = await checkAccessibilityStatement(page, url);
+    
+    // Combine all violations
+    const allViolations = [
+      ...(axeResults.violations || []),
+      ...(mediaResults.violations || []),
+      ...(keyboardResults.violations || []),
+      ...(manualReviewResults.violations || []),
+      ...(a11yStatementResults.violations || [])
+    ];
+    
+    // Calculate combined violation counts
     const violationCounts = {
       total: 0,
       critical: 0,
       warning: 0,
       info: 0
     };
-
-    // Count violations by severity
-    if (results.violations && Array.isArray(results.violations)) {
-      results.violations.forEach(violation => {
-        const count = violation.nodes?.length || 0;
-        violationCounts.total += count;
-        
-        // Map axe impact levels to our severity levels
-        switch (violation.impact) {
-          case 'critical':
-          case 'serious':
-            violationCounts.critical += count;
-            break;
-          case 'moderate':
-          case 'minor':
-            violationCounts.warning += count;
-            break;
-          default:
-            violationCounts.info += count;
-            break;
-        }
-      });
-    }
-
-    // Store the violation counts for easy retrieval
+    
+    allViolations.forEach(violation => {
+      const nodeCount = violation.nodes?.length || 0;
+      violationCounts.total += nodeCount;
+      
+      // Map impact levels to our severity categories
+      switch (violation.impact) {
+        case 'critical':
+        case 'serious':
+          violationCounts.critical += nodeCount;
+          break;
+        case 'moderate':
+        case 'minor':
+          violationCounts.warning += nodeCount;
+          break;
+        default:
+          violationCounts.info += nodeCount;
+          break;
+      }
+    });
+    
+    // Return comprehensive results
     return {
       url,
-      violations: results.violations || [],
-      passes: results.passes || [],
-      incomplete: results.incomplete || [],
-      inapplicable: results.inapplicable || [],
-      violationCounts // Add the counts to the result
+      violations: allViolations,
+      passes: axeResults.passes || [],
+      incomplete: axeResults.incomplete || [],
+      inapplicable: axeResults.inapplicable || [],
+      violationCounts,
+      additionalAnalysis: {
+        hasMediaIssues: mediaResults.violationCounts.total > 0,
+        hasKeyboardIssues: keyboardResults.violationCounts.total > 0,
+        needsManualReview: manualReviewResults.violationCounts.total > 0,
+        hasAccessibilityStatement: a11yStatementResults.violations.length === 0
+      }
     };
   } catch (error) {
     logger.error(`Error testing accessibility for ${url}: ${error.message}`);
@@ -105,6 +152,14 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
   
   logger.info(`Starting crawl of ${baseUrl} with max ${maxPages} pages, max depth ${maxDepth}`);
 
+  // Function to log current scanning status
+  const logScanStatus = () => {
+    logger.info(`Scan status for ${baseUrl}: Found ${allFoundUrls.size + queue.length} URLs, ${queue.length} in queue, ${pagesScanned}/${maxPages} pages scanned`);
+  };
+
+  // Initial status log
+  logScanStatus();
+
   while (queue.length > 0 && pagesScanned < maxPages) {
     const { url, depth } = queue.shift();
     
@@ -114,7 +169,7 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
     visitedUrls.add(url);
     
     try {
-      logger.info(`Scanning page ${pagesScanned + 1}/${maxPages}: ${url}`);
+      logger.info(`Scanning page ${pagesScanned + 1}/${maxPages} (${queue.length} in queue): ${url}`);
       
       // Create new context and page for each URL to avoid state leakage
       const context = await browser.newContext({
@@ -140,7 +195,7 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
         logger.warn(`Navigation timeout or error for ${url}: ${err.message}`);
       });
 
-      // Test accessibility
+      // Test accessibility with enhanced tests
       const results = await testAccessibility(page, url);
       
       // Extract links if we're not at max depth
@@ -161,16 +216,67 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
                 return null;
               }
             })
-            .filter(url => url && url.startsWith(baseUrl) && !url.includes('#') && !url.match(/\.(jpg|jpeg|png|gif|pdf|zip|doc|xls|ppt|mp3|mp4|avi|mov)$/i));
+            .filter(url => {
+              if (!url) return false;
+              
+              try {
+                const urlObj = new URL(url);
+                
+                // Keep URLs from the same origin
+                const sameOrigin = urlObj.origin === baseUrl;
+                
+                // Filter out common non-HTML resources
+                const isLikelyPage = !url.match(/\.(jpg|jpeg|png|gif|pdf|zip|doc|xls|ppt|mp3|mp4|avi|mov|css|js|json|xml|woff|woff2|ttf|svg)$/i);
+                
+                // Skip anchor links to same page
+                const notJustAnchor = !(urlObj.pathname === window.location.pathname && urlObj.hash);
+                
+                return sameOrigin && isLikelyPage && notJustAnchor;
+              } catch (e) {
+                return false;
+              }
+            });
         });
         
+        // Also check for PDF files specifically to test them
+        const pdfLinks = await page.evaluate(() => {
+          const baseUrl = window.location.origin;
+          return Array.from(document.querySelectorAll('a[href$=".pdf"]'))
+            .map(a => {
+              try {
+                return new URL(a.href, baseUrl).href;
+              } catch (e) {
+                return null;
+              }
+            })
+            .filter(url => url);
+        });
+        
+        // Add PDFs to the links array
+        links = [...links, ...pdfLinks];
+        
         // Add new links to queue and to found URLs set
+        let newLinksCount = 0;
+        
         links.forEach(link => {
-          allFoundUrls.add(link); // Add to all found URLs
-          if (!visitedUrls.has(link)) {
+          if (!allFoundUrls.has(link)) {
+            newLinksCount++;
+            allFoundUrls.add(link); // Add to all found URLs
+          }
+          
+          if (!visitedUrls.has(link) && !queue.some(item => item.url === link)) {
             queue.push({ url: link, depth: depth + 1 });
           }
         });
+        
+        // Log if we found significant new links
+        if (newLinksCount > 0) {
+          logger.info(`Found ${newLinksCount} new links on ${url}`);
+          // If we've found a lot of new links, log the current status
+          if (newLinksCount > 10) {
+            logScanStatus();
+          }
+        }
       }
       
       // Store results in database including violationCounts
@@ -181,7 +287,8 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
           url,
           JSON.stringify({ 
             violations: results.violations,
-            violationCounts: results.violationCounts
+            violationCounts: results.violationCounts,
+            additionalAnalysis: results.additionalAnalysis
           }),
           JSON.stringify(links),
           pageStatus
@@ -191,9 +298,14 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
       // Close context
       await context.close();
       
-      // Update progress with both scanned and found counts
+      // Update progress with both scanned and found counts, and queue size
       pagesScanned++;
-      progressCallback(pagesScanned, allFoundUrls.size);
+      progressCallback(pagesScanned, allFoundUrls.size, queue.length);
+      
+      // Log status periodically
+      if (pagesScanned % 5 === 0 || queue.length % 20 === 0) {
+        logScanStatus();
+      }
       
       // Small delay to avoid overwhelming the server
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -217,17 +329,18 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
       
       // Still count this as a scanned page
       pagesScanned++;
-      progressCallback(pagesScanned, allFoundUrls.size);
+      progressCallback(pagesScanned, allFoundUrls.size, queue.length);
     }
   }
+  
+  // Final log showing complete stats
+  logger.info(`Crawl complete for ${baseUrl}: Found ${allFoundUrls.size} total URLs, scanned ${pagesScanned} pages`);
   
   // Update the scan status to completed
   await runAsync(
     'UPDATE scan_results SET status = ? WHERE scan_id = ? AND status IS NULL',
     ['completed', scanId]
   );
-  
-  logger.info(`Crawl complete: Scanned ${pagesScanned} pages from ${baseUrl}, found ${allFoundUrls.size} total links`);
 }
 
 module.exports = {

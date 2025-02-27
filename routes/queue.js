@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
 const { allAsync, runAsync } = require('../db/db');
 const logger = require('../utils/logger');
+const { sanitizeUrlForFilename } = require('../utils/helpers');
+const { REPORT_DIR } = require('../config/config');
 const { DEFAULT_MAX_PAGES } = require('../config/config');
 
 // Get queue page
@@ -103,6 +107,48 @@ router.post('/remove', async (req, res) => {
   } catch (error) {
     logger.error(`Failed to remove URL ${url} from queue: ${error.stack}`);
     res.status(500).json({ error: 'Failed to remove URL from queue' });
+  }
+});
+
+// Add this route to your existing routes/queue.js file
+
+// Delete scan results
+router.post('/delete-scan', async (req, res) => {
+  const { scanId } = req.body;
+  
+  if (!scanId) {
+    return res.status(400).json({ error: 'Scan ID is required' });
+  }
+  
+  try {
+    // Get the URL of the scan first (for deleting report files)
+    const scanRow = await allAsync(
+      'SELECT url FROM scan_results WHERE scan_id = ? LIMIT 1',
+      [scanId]
+    );
+    
+    if (scanRow.length === 0) {
+      return res.status(404).json({ error: 'Scan not found' });
+    }
+    
+    const url = scanRow[0].url;
+    const sanitizedUrl = sanitizeUrlForFilename(url);
+    
+    // Delete report files if they exist
+    const reportDir = path.join(REPORT_DIR, sanitizedUrl);
+    if (fs.existsSync(reportDir)) {
+      fs.rmdirSync(reportDir, { recursive: true });
+      logger.info(`Deleted report directory for ${url}`);
+    }
+    
+    // Delete scan results from database
+    await runAsync('DELETE FROM scan_results WHERE scan_id = ?', [scanId]);
+    logger.info(`Deleted scan results for scan ID ${scanId}`);
+    
+    res.json({ success: true });
+  } catch (error) {
+    logger.error(`Failed to delete scan results for scan ID ${scanId}: ${error.stack}`);
+    res.status(500).json({ error: 'Failed to delete scan results' });
   }
 });
 

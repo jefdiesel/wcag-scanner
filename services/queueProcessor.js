@@ -36,9 +36,9 @@ async function startQueueProcessor() {
           args: PLAYWRIGHT_ARGS,
         });
         
-        // Perform the scan
-        await crawlAndTest(url, browser, maxPages, 1, (progress) => {
-          logger.info(`Scan progress for ${scanId}: ${progress} pages scanned`);
+        // Perform the scan with enhanced progress tracking
+        await crawlAndTest(url, browser, maxPages, 1, (pagesScanned, pagesFound, queueSize) => {
+          logger.info(`Scan progress for ${scanId}: ${pagesScanned} pages scanned, ${pagesFound} pages found, ${queueSize} pages in queue`);
         }, scanId, 5);
         
         // Close browser

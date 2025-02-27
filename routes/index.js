@@ -148,14 +148,27 @@ router.get('/progress', (req, res) => {
       );
       
       // Get count of found pages (from links column)
-      const foundPagesResult = await allAsync(
+      const linksResult = await allAsync(
         'SELECT links FROM scan_results WHERE scan_id = ?',
         [scanId]
       );
       
-      // Calculate total unique links found
+      // Calculate total unique links found and in queue
       let uniqueUrls = new Set();
-      foundPagesResult.forEach(row => {
+      let visitedUrls = new Set();
+      
+      // Get all URLs that have been visited
+      const visitedRowsResult = await allAsync(
+        'SELECT url FROM scan_results WHERE scan_id = ?',
+        [scanId]
+      );
+      
+      visitedRowsResult.forEach(row => {
+        visitedUrls.add(row.url);
+      });
+      
+      // Get all links found during crawling
+      linksResult.forEach(row => {
         try {
           const links = JSON.parse(row.links || '[]');
           links.forEach(link => uniqueUrls.add(link));
@@ -164,6 +177,9 @@ router.get('/progress', (req, res) => {
         }
       });
       
+      // Calculate links in queue (found but not yet visited)
+      const inQueue = Array.from(uniqueUrls).filter(url => !visitedUrls.has(url)).length;
+      
       // Get completion status
       const statusResult = await allAsync(
         'SELECT status FROM scan_results WHERE scan_id = ? AND status = ? LIMIT 1',
@@ -171,13 +187,14 @@ router.get('/progress', (req, res) => {
       );
       
       const scanned = scannedResult[0]?.scanned || 0;
-      const found = uniqueUrls.size + scanned; // Include already scanned pages
+      const found = uniqueUrls.size + visitedUrls.size; // Total unique URLs
       const completed = statusResult.length > 0;
       
       // Send progress data as JSON
       res.write(`data: ${JSON.stringify({
         scanned,
         found,
+        inQueue,
         completed
       })}\n\n`);
       

@@ -2,9 +2,40 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 const { getAsync, allAsync } = require('../db/db');
-const { sanitizeUrlForFilename, safeJsonParse, getReportPaths } = require('../utils/helpers');
+const { sanitizeUrlForFilename } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const { REPORT_DIR } = require('../config/config');
+
+/**
+ * Helper function to safely parse JSON with a fallback
+ * @param {string} jsonString - JSON string to parse
+ * @param {*} fallback - Fallback value if parsing fails
+ * @returns {*} - Parsed object or fallback value
+ */
+function safeJsonParse(jsonString, fallback) {
+  try {
+    return jsonString ? JSON.parse(jsonString) : fallback;
+  } catch (error) {
+    return fallback;
+  }
+}
+
+/**
+ * Get the report file paths for a given scan
+ * @param {string} url - Original URL
+ * @param {string} reportsDir - Reports directory path
+ * @returns {Object} - Object with paths for report directory, PDF and CSV reports
+ */
+function getReportPaths(url, reportsDir) {
+  const sanitizedUrl = sanitizeUrlForFilename(url);
+  const reportDir = path.join(reportsDir, sanitizedUrl);
+  
+  return {
+    reportDir,
+    pdfPath: path.join(reportDir, `${sanitizedUrl}.pdf`),
+    csvPath: path.join(reportDir, `${sanitizedUrl}.csv`)
+  };
+}
 
 /**
  * Generate a concise, optimized PDF (executive summary)
@@ -27,12 +58,61 @@ async function generatePDF(scanId, url) {
       return null;
     }
 
-    // Parse results
+    // Parse results - using the same counting logic as in the UI
     const results = rows.map(row => {
       try {
+        // Parse violations JSON (handle different formats)
+        const violationsData = safeJsonParse(row.violations, {});
+        
+        // Extract violations array - could be in different formats
+        let violations = [];
+        
+        if (Array.isArray(violationsData)) {
+          violations = violationsData;
+        } else if (violationsData.violations && Array.isArray(violationsData.violations)) {
+          violations = violationsData.violations;
+        } else if (typeof violationsData === 'object' && violationsData !== null) {
+          if (violationsData.violationCounts) {
+            // If we already have the counts, use them directly
+            return {
+              page: row.url,
+              violationCounts: violationsData.violationCounts,
+              violations: violationsData.violations || [],
+              links: safeJsonParse(row.links, []),
+              status: row.status || null
+            };
+          }
+          // Otherwise, try to extract violations from the object
+          violations = Object.values(violationsData).flat().filter(Array.isArray);
+        }
+        
+        // Count violations using the same logic as UI - count each node occurrence
+        const violationCounts = { total: 0, critical: 0, warning: 0, info: 0 };
+        
+        violations.forEach(violation => {
+          const nodeCount = violation.nodes?.length || 0;
+          violationCounts.total += nodeCount;
+          
+          // Map axe impact levels to our severity levels
+          switch (violation.impact) {
+            case 'critical':
+            case 'serious':
+              violationCounts.critical += nodeCount;
+              break;
+            case 'moderate':
+            case 'minor':
+              violationCounts.warning += nodeCount;
+              break;
+            default:
+              violationCounts.info += nodeCount;
+              break;
+          }
+        });
+        
         return {
           page: row.url,
-          violations: safeJsonParse(row.violations, {}),
+          violationCounts,
+          violations,
           links: safeJsonParse(row.links, []),
           status: row.status || null
         };
@@ -40,14 +120,15 @@ async function generatePDF(scanId, url) {
         logger.error(`Failed to parse JSON for row ${row.url}: ${parseErr.message}`);
         return {
           page: row.url,
-          violations: {},
+          violationCounts: { total: 0, critical: 0, warning: 0, info: 0 },
+          violations: [],
           links: [],
           status: row.status || null
         };
       }
     });
 
-    // Initialize issue counters and categories
+    // Initialize issue counters and categories using the same counting logic as the UI
     const issueCounters = {
       total: 0,
       critical: 0,
@@ -67,72 +148,67 @@ async function generatePDF(scanId, url) {
       }
     };
 
-    // Process violations to categorize issues
+    // Directly use violation counts from the parsed results
     results.forEach(result => {
-      Object.values(result.violations).forEach(violations => {
-        if (!Array.isArray(violations)) {
-          return;
+      // Add to total counts
+      issueCounters.total += result.violationCounts.total;
+      issueCounters.critical += result.violationCounts.critical;
+      issueCounters.warning += result.violationCounts.warning;
+      issueCounters.info += result.violationCounts.info;
+      
+      // Process individual violations to categorize by level and category
+      result.violations.forEach(violation => {
+        if (!violation) return;
+        
+        const nodeCount = violation.nodes?.length || 0;
+        if (nodeCount === 0) return;
+        
+        // Determine severity
+        let severity = 'info';
+        if (violation.impact === 'critical' || violation.impact === 'serious') {
+          severity = 'critical';
+        } else if (violation.impact === 'moderate' || violation.impact === 'minor') {
+          severity = 'warning';
         }
         
-        violations.forEach(violation => {
-          try {
-            if (!violation) {
-              return;
-            }
-            
-            issueCounters.total++;
-            const severity = violation.impact || 'info';
-            
-            // Count by severity
-            if (severity === 'critical') issueCounters.critical++;
-            else if (severity === 'serious' || severity === 'warning') issueCounters.warning++;
-            else issueCounters.info++;
+        // Map WCAG tags to levels and count
+        let level = 'Level AA'; // Default to AA
+        if (violation.tags && Array.isArray(violation.tags)) {
+          if (violation.tags.includes('wcag2a')) level = 'Level A';
+          else if (violation.tags.includes('wcag2aaa')) level = 'Level AAA';
+          
+          issueCounters.levels[level].total += nodeCount;
+          if (severity === 'critical') issueCounters.levels[level].critical += nodeCount;
+          else if (severity === 'warning') issueCounters.levels[level].warning += nodeCount;
+          else issueCounters.levels[level].info += nodeCount;
 
-            // Map WCAG tags to levels and count
-            let level = 'Level AA'; // Default to AA
-            if (violation.tags && Array.isArray(violation.tags)) {
-              if (violation.tags.includes('wcag2a')) level = 'Level A';
-              else if (violation.tags.includes('wcag2aaa')) level = 'Level AAA';
-              
-              issueCounters.levels[level].total++;
-              if (severity === 'critical') issueCounters.levels[level].critical++;
-              else if (severity === 'serious' || severity === 'warning') issueCounters.levels[level].warning++;
-              else issueCounters.levels[level].info++;
-
-              // Map to WCAG principle categories
-              let category = 'Error'; // Default
-              if (violation.tags.includes('cat.text-alternatives') || 
-                  violation.tags.includes('cat.sensory-and-visual-cues')) {
-                category = 'Perceivable';
-              } else if (violation.tags.includes('cat.keyboard') || 
-                         violation.tags.includes('cat.name-role-value') || 
-                         violation.tags.includes('cat.time-and-media')) {
-                category = 'Operable';
-              } else if (violation.tags.includes('cat.language') || 
-                         violation.tags.includes('cat.form') || 
-                         violation.tags.includes('cat.parsing')) {
-                category = 'Understandable';
-              } else if (violation.tags.includes('cat.structure') || 
-                         violation.tags.includes('cat.aria')) {
-                category = 'Robust';
-              }
-              
-              issueCounters.categories[category].total++;
-              if (severity === 'critical') issueCounters.categories[category].critical++;
-              else if (severity === 'serious' || severity === 'warning') issueCounters.categories[category].warning++;
-              else issueCounters.categories[category].info++;
-            }
-          } catch (error) {
-            logger.error(`Error processing violation: ${error.message}`);
+          // Map to WCAG principle categories
+          let category = 'Error'; // Default
+          if (violation.tags.includes('cat.text-alternatives') || 
+              violation.tags.includes('cat.sensory-and-visual-cues')) {
+            category = 'Perceivable';
+          } else if (violation.tags.includes('cat.keyboard') || 
+                     violation.tags.includes('cat.name-role-value') || 
+                     violation.tags.includes('cat.time-and-media')) {
+            category = 'Operable';
+          } else if (violation.tags.includes('cat.language') || 
+                     violation.tags.includes('cat.form') || 
+                     violation.tags.includes('cat.parsing')) {
+            category = 'Understandable';
+          } else if (violation.tags.includes('cat.structure') || 
+                     violation.tags.includes('cat.aria')) {
+            category = 'Robust';
           }
-        });
+          
+          issueCounters.categories[category].total += nodeCount;
+          if (severity === 'critical') issueCounters.categories[category].critical += nodeCount;
+          else if (severity === 'warning') issueCounters.categories[category].warning += nodeCount;
+          else issueCounters.categories[category].info += nodeCount;
+        }
       });
     });
 
-    // Calculate compliance score
-    const complianceScore = issueCounters.total > 0 
-      ? ((issueCounters.total - issueCounters.critical) / issueCounters.total * 100).toFixed(1) 
-      : '100.0';
+    // No longer calculating a compliance score that could be misleading
 
     // Get report paths
     const { reportDir, pdfPath } = getReportPaths(url, REPORT_DIR);
@@ -185,7 +261,10 @@ async function generatePDF(scanId, url) {
        .moveDown(0.5)
        .fontSize(12)
        .font('Helvetica')
-       .text(`Overall Compliance Score: ${complianceScore}%`)
+       .text(`This report details accessibility issues that require attention.`)
+       .moveDown(0.2)
+       .text(`Critical issues: ${issueCounters.critical} (${(issueCounters.critical/issueCounters.total*100).toFixed(1)}% of total)`)
+       .text(`Warning issues: ${issueCounters.warning} (${(issueCounters.warning/issueCounters.total*100).toFixed(1)}% of total)`)
        .moveDown(0.5);
 
     // Severity table - optimized structure
@@ -421,27 +500,7 @@ async function generateCSV(scanId, url) {
       return null;
     }
 
-    // Parse results
-    const results = rows.map(row => {
-      try {
-        return {
-          page: row.url,
-          violations: safeJsonParse(row.violations, {}),
-          links: safeJsonParse(row.links, []),
-          status: row.status || null
-        };
-      } catch (parseErr) {
-        logger.error(`Failed to parse JSON for row ${row.url}: ${parseErr.message}`);
-        return {
-          page: row.url,
-          violations: {},
-          links: [],
-          status: row.status || null
-        };
-      }
-    });
-
-    // Get report paths
+    // Sanitize URL for folder and file naming
     const { reportDir, csvPath } = getReportPaths(url, REPORT_DIR);
     
     // Create report directory if it doesn't exist
@@ -456,65 +515,78 @@ async function generateCSV(scanId, url) {
     csvStream.write('Page URL,Status,Issue Type,WCAG Level,Category,Description,Impact,Node\n');
     
     // Extract and write detailed issues 
-    results.forEach(result => {
-      const pageUrl = result.page.replace(/"/g, '""'); // Escape quotes
-      const status = result.status || 'N/A';
+    rows.forEach(row => {
+      const pageUrl = row.url.replace(/"/g, '""'); // Escape quotes
+      const status = row.status || 'N/A';
+      
+      // Parse violations data
+      const violationsData = safeJsonParse(row.violations, {});
+      let violations = [];
+      
+      // Extract violations array depending on format
+      if (Array.isArray(violationsData)) {
+        violations = violationsData;
+      } else if (violationsData.violations && Array.isArray(violationsData.violations)) {
+        violations = violationsData.violations;
+      } else if (typeof violationsData === 'object' && violationsData !== null) {
+        violations = Object.values(violationsData).flat().filter(Array.isArray);
+      }
       
       let hasViolations = false;
       
-      // Process all violation categories
-      Object.entries(result.violations).forEach(([issueType, violations]) => {
-        if (Array.isArray(violations)) {
-          violations.forEach(violation => {
-            if (!violation) return;
-            
-            hasViolations = true;
-            
-            // Determine WCAG level
-            let wcagLevel = 'AA'; // Default
-            if (violation.tags && Array.isArray(violation.tags)) {
-              if (violation.tags.includes('wcag2a')) wcagLevel = 'A';
-              else if (violation.tags.includes('wcag2aaa')) wcagLevel = 'AAA';
-            }
-            
-            // Determine category
-            let category = 'Error'; // Default
-            if (violation.tags && Array.isArray(violation.tags)) {
-              if (violation.tags.includes('cat.text-alternatives') || 
-                  violation.tags.includes('cat.sensory-and-visual-cues')) {
-                category = 'Perceivable';
-              } else if (violation.tags.includes('cat.keyboard') || 
-                        violation.tags.includes('cat.name-role-value') || 
-                        violation.tags.includes('cat.time-and-media')) {
-                category = 'Operable';
-              } else if (violation.tags.includes('cat.language') || 
-                        violation.tags.includes('cat.form') || 
-                        violation.tags.includes('cat.parsing')) {
-                category = 'Understandable';
-              } else if (violation.tags.includes('cat.structure') || 
-                        violation.tags.includes('cat.aria')) {
-                category = 'Robust';
-              }
-            }
-            
-            // Escape and format description
-            const description = (violation.description || 'No description').replace(/"/g, '""').replace(/,/g, ';');
-            const impact = violation.impact || 'info';
-            
-            // Get node information if available
-            let nodeInfo = 'N/A';
-            if (violation.nodes && Array.isArray(violation.nodes) && violation.nodes.length > 0) {
-              const node = violation.nodes[0];
-              if (node.target && Array.isArray(node.target) && node.target.length > 0) {
-                nodeInfo = node.target[0].toString().replace(/"/g, '""').replace(/,/g, ';').substring(0, 100);
-                if (nodeInfo.length >= 100) nodeInfo += '...';
-              }
-            }
-            
-            // Write the detailed issue row
-            csvStream.write(`"${pageUrl}",${status},"${issueType}",Level ${wcagLevel},${category},"${description}",${impact},"${nodeInfo}"\n`);
-          });
+      // Process all violations
+      violations.forEach(violation => {
+        if (!violation) return;
+        
+        // Get nodes (each node is an occurrence of this violation)
+        const nodes = violation.nodes || [];
+        if (nodes.length === 0) return;
+        
+        hasViolations = true;
+        
+        // Determine WCAG level
+        let wcagLevel = 'AA'; // Default
+        if (violation.tags && Array.isArray(violation.tags)) {
+          if (violation.tags.includes('wcag2a')) wcagLevel = 'A';
+          else if (violation.tags.includes('wcag2aaa')) wcagLevel = 'AAA';
         }
+        
+        // Determine category
+        let category = 'Error'; // Default
+        if (violation.tags && Array.isArray(violation.tags)) {
+          if (violation.tags.includes('cat.text-alternatives') || 
+              violation.tags.includes('cat.sensory-and-visual-cues')) {
+            category = 'Perceivable';
+          } else if (violation.tags.includes('cat.keyboard') || 
+                    violation.tags.includes('cat.name-role-value') || 
+                    violation.tags.includes('cat.time-and-media')) {
+            category = 'Operable';
+          } else if (violation.tags.includes('cat.language') || 
+                    violation.tags.includes('cat.form') || 
+                    violation.tags.includes('cat.parsing')) {
+            category = 'Understandable';
+          } else if (violation.tags.includes('cat.structure') || 
+                    violation.tags.includes('cat.aria')) {
+            category = 'Robust';
+          }
+        }
+        
+        // Escape and format description
+        const description = (violation.description || 'No description').replace(/"/g, '""').replace(/,/g, ';');
+        const impact = violation.impact || 'info';
+        
+        // Each node gets its own row in the CSV - this matches our UI counting
+        nodes.forEach(node => {
+          // Get node information
+          let nodeInfo = 'N/A';
+          if (node.target && Array.isArray(node.target) && node.target.length > 0) {
+            nodeInfo = node.target[0].toString().replace(/"/g, '""').replace(/,/g, ';').substring(0, 100);
+            if (nodeInfo.length >= 100) nodeInfo += '...';
+          }
+          
+          // Write the detailed issue row
+          csvStream.write(`"${pageUrl}",${status},"${violation.id || 'Unknown'}",Level ${wcagLevel},${category},"${description}",${impact},"${nodeInfo}"\n`);
+        });
       });
       
       // If page has no violations, still include a row
@@ -536,5 +608,7 @@ async function generateCSV(scanId, url) {
 
 module.exports = {
   generatePDF,
-  generateCSV
+  generateCSV,
+  getReportPaths,
+  safeJsonParse
 };
