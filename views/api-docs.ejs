@@ -1,0 +1,392 @@
+<%- include('partials/header', { title: 'API Documentation' }) %>
+
+<div class="container my-5">
+  <div class="row">
+    <div class="col-md-3">
+      <!-- Sidebar -->
+      <div class="list-group mb-4">
+        <a href="#overview" class="list-group-item list-group-item-action">Overview</a>
+        <a href="#authentication" class="list-group-item list-group-item-action">Authentication</a>
+        <a href="#endpoints" class="list-group-item list-group-item-action">Endpoints</a>
+        <a href="#scan" class="list-group-item list-group-item-action">Starting a Scan</a>
+        <a href="#status" class="list-group-item list-group-item-action">Checking Status</a>
+        <a href="#details" class="list-group-item list-group-item-action">Getting Details</a>
+        <a href="#listing" class="list-group-item list-group-item-action">Listing Scans</a>
+        <a href="#rate-limits" class="list-group-item list-group-item-action">Rate Limits</a>
+        <a href="#errors" class="list-group-item list-group-item-action">Error Handling</a>
+      </div>
+    </div>
+    
+    <div class="col-md-9">
+      <!-- Main content -->
+      <h1 class="mb-4">WCAG Accessibility Scanner API</h1>
+      
+      <div id="overview" class="mb-5">
+        <h2>Overview</h2>
+        <p>The WCAG Accessibility Scanner API allows you to programmatically scan websites for accessibility issues. You can start scans, check their status, and retrieve results.</p>
+        <p>All API endpoints return data in JSON format and use standard HTTP response codes.</p>
+      </div>
+      
+      <div id="authentication" class="mb-5">
+        <h2>Authentication</h2>
+        <p>All API requests require an API key to be sent in the <code>X-API-Key</code> header.</p>
+        <pre><code>X-API-Key: your-api-key-here</code></pre>
+        <p>To get an API key, please contact our team or visit your account dashboard if you already have access.</p>
+      </div>
+      
+      <div id="endpoints" class="mb-5">
+        <h2>API Endpoints</h2>
+        <table class="table table-bordered">
+          <thead class="bg-light">
+            <tr>
+              <th>Endpoint</th>
+              <th>Method</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>/api/status</code></td>
+              <td>GET</td>
+              <td>Check API status</td>
+            </tr>
+            <tr>
+              <td><code>/api/scan</code></td>
+              <td>POST</td>
+              <td>Start a new scan</td>
+            </tr>
+            <tr>
+              <td><code>/api/scan/:scanId</code></td>
+              <td>GET</td>
+              <td>Get scan status</td>
+            </tr>
+            <tr>
+              <td><code>/api/scan/:scanId/details</code></td>
+              <td>GET</td>
+              <td>Get detailed scan results</td>
+            </tr>
+            <tr>
+              <td><code>/api/scans</code></td>
+              <td>GET</td>
+              <td>List all scans</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      
+      <div id="scan" class="mb-5">
+        <h2>Starting a Scan</h2>
+        <p>To start a new scan, make a POST request to <code>/api/scan</code> with the following parameters:</p>
+        
+        <h4>Request Parameters</h4>
+        <table class="table table-bordered">
+          <thead class="bg-light">
+            <tr>
+              <th>Parameter</th>
+              <th>Type</th>
+              <th>Required</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>url</code></td>
+              <td>String</td>
+              <td>Yes</td>
+              <td>URL to scan</td>
+            </tr>
+            <tr>
+              <td><code>maxPages</code></td>
+              <td>Number</td>
+              <td>No</td>
+              <td>Maximum number of pages to scan (default: 100, max: 10000)</td>
+            </tr>
+            <tr>
+              <td><code>maxDepth</code></td>
+              <td>Number</td>
+              <td>No</td>
+              <td>Maximum crawl depth (default: 5, max: 10)</td>
+            </tr>
+            <tr>
+              <td><code>queue</code></td>
+              <td>Boolean</td>
+              <td>No</td>
+              <td>Whether to queue the scan instead of running it immediately (default: false)</td>
+            </tr>
+          </tbody>
+        </table>
+        
+        <h4>Example Request</h4>
+        <pre><code>POST /api/scan
+X-API-Key: your-api-key-here
+Content-Type: application/json
+
+{
+  "url": "https://example.com",
+  "maxPages": 50,
+  "maxDepth": 3,
+  "queue": false
+}</code></pre>
+        
+        <h4>Example Response</h4>
+        <pre><code>{
+  "scanId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "status": "running",
+  "message": "Scan has been started"
+}</code></pre>
+      </div>
+      
+      <div id="status" class="mb-5">
+        <h2>Checking Scan Status</h2>
+        <p>To check the status of a scan, make a GET request to <code>/api/scan/:scanId</code>.</p>
+        
+        <h4>Example Request</h4>
+        <pre><code>GET /api/scan/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+X-API-Key: your-api-key-here</code></pre>
+        
+        <h4>Example Response</h4>
+        <pre><code>{
+  "scanId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "url": "https://example.com",
+  "status": "running",
+  "requestedAt": "2023-10-15T14:30:00Z",
+  "pagesScanned": 25,
+  "pagesFound": 85,
+  "issues": {
+    "total": 120,
+    "critical": 45,
+    "warning": 65,
+    "info": 10
+  }
+}</code></pre>
+        
+        <p>When a scan is completed, the response will also include links to the generated reports:</p>
+        
+        <pre><code>{
+  "scanId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "url": "https://example.com",
+  "status": "completed",
+  "requestedAt": "2023-10-15T14:30:00Z",
+  "pagesScanned": 50,
+  "pagesFound": 85,
+  "issues": {
+    "total": 237,
+    "critical": 84,
+    "warning": 103,
+    "info": 50
+  },
+  "reports": {
+    "pdf": "https://example.com/reports/example.com/example.com.pdf",
+    "csv": "https://example.com/reports/example.com/example.com.csv"
+  }
+}</code></pre>
+      </div>
+      
+      <div id="details" class="mb-5">
+        <h2>Getting Detailed Scan Results</h2>
+        <p>To get detailed scan results, make a GET request to <code>/api/scan/:scanId/details</code>.</p>
+        
+        <h4>Example Request</h4>
+        <pre><code>GET /api/scan/a1b2c3d4-e5f6-7890-abcd-ef1234567890/details
+X-API-Key: your-api-key-here</code></pre>
+        
+        <h4>Example Response</h4>
+        <pre><code>{
+  "scanId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "url": "https://example.com",
+  "requestedAt": "2023-10-15T14:30:00Z",
+  "status": "completed",
+  "results": [
+    {
+      "url": "https://example.com",
+      "status": 200,
+      "scannedAt": "2023-10-15T14:35:00Z",
+      "violationCounts": {
+        "total": 45,
+        "critical": 12,
+        "warning": 28,
+        "info": 5
+      },
+      "violations": [
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "description": "Elements must have sufficient color contrast",
+          "nodes": [
+            {
+              "target": ["#header h1"],
+              "html": "<h1 style=\"color: #777\">Example Website</h1>"
+            },
+            // More nodes...
+          ]
+        },
+        // More violations...
+      ],
+      "additionalAnalysis": {
+        "hasMediaIssues": true,
+        "hasKeyboardIssues": false,
+        "needsManualReview": true,
+        "hasAccessibilityStatement": false
+      }
+    },
+    // More pages...
+  ]
+}</code></pre>
+      </div>
+      
+      <div id="listing" class="mb-5">
+        <h2>Listing Scans</h2>
+        <p>To list all your scans, make a GET request to <code>/api/scans</code>. You can use the <code>limit</code> and <code>offset</code> query parameters for pagination.</p>
+        
+        <h4>Example Request</h4>
+        <pre><code>GET /api/scans?limit=10&offset=0
+X-API-Key: your-api-key-here</code></pre>
+        
+        <h4>Example Response</h4>
+        <pre><code>{
+  "scans": [
+    {
+      "scan_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "url": "https://example.com",
+      "max_pages": 50,
+      "max_depth": 3,
+      "requested_at": "2023-10-15T14:30:00Z",
+      "status": "completed"
+    },
+    // More scans...
+  ],
+  "pagination": {
+    "total": 45,
+    "limit": 10,
+    "offset": 0,
+    "more": true
+  }
+}</code></pre>
+      </div>
+      
+      <div id="rate-limits" class="mb-5">
+        <h2>Rate Limits</h2>
+        <p>API requests are rate-limited based on your account's plan. The default rate limit is 100 requests per day. You can check your rate limit status through the response headers:</p>
+        <ul>
+          <li><code>X-RateLimit-Limit</code>: Your total allowed requests per day</li>
+          <li><code>X-RateLimit-Reset</code>: The timestamp when your rate limit resets (Unix timestamp)</li>
+        </ul>
+        
+        <p>If you exceed your rate limit, you'll receive a 429 Too Many Requests response:</p>
+        
+        <pre><code>{
+  "error": "Rate limit exceeded"
+}</code></pre>
+      </div>
+      
+      <div id="errors" class="mb-5">
+        <h2>Error Handling</h2>
+        <p>The API uses standard HTTP status codes to indicate the success or failure of a request:</p>
+        
+        <table class="table table-bordered">
+          <thead class="bg-light">
+            <tr>
+              <th>Status Code</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>200 OK</td>
+              <td>The request was successful</td>
+            </tr>
+            <tr>
+              <td>201 Created</td>
+              <td>Resource created successfully</td>
+            </tr>
+            <tr>
+              <td>202 Accepted</td>
+              <td>The request has been accepted for processing</td>
+            </tr>
+            <tr>
+              <td>400 Bad Request</td>
+              <td>The request was invalid or contains invalid parameters</td>
+            </tr>
+            <tr>
+              <td>401 Unauthorized</td>
+              <td>Authentication is required or failed</td>
+            </tr>
+            <tr>
+              <td>404 Not Found</td>
+              <td>The requested resource was not found</td>
+            </tr>
+            <tr>
+              <td>429 Too Many Requests</td>
+              <td>Rate limit exceeded</td>
+            </tr>
+            <tr>
+              <td>500 Internal Server Error</td>
+              <td>An unexpected error occurred on the server</td>
+            </tr>
+          </tbody>
+        </table>
+        
+        <p>Error responses include a JSON object with an error message:</p>
+        
+        <pre><code>{
+  "error": "Invalid URL format"
+}</code></pre>
+      </div>
+      
+      <div id="code-examples" class="mb-5">
+        <h2>Code Examples</h2>
+        
+        <h4>cURL</h4>
+        <pre><code>curl -X POST "https://example.com/api/scan" \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "maxPages": 50}'</code></pre>
+        
+        <h4>Node.js</h4>
+        <pre><code>const axios = require('axios');
+
+async function startScan() {
+  try {
+    const response = await axios.post('https://example.com/api/scan', {
+      url: 'https://example.com',
+      maxPages: 50
+    }, {
+      headers: {
+        'X-API-Key': 'your-api-key-here',
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    console.log(response.data);
+  } catch (error) {
+    console.error(error.response.data);
+  }
+}
+
+startScan();</code></pre>
+        
+        <h4>Python</h4>
+        <pre><code>import requests
+
+def start_scan():
+    url = 'https://example.com/api/scan'
+    headers = {
+        'X-API-Key': 'your-api-key-here',
+        'Content-Type': 'application/json'
+    }
+    data = {
+        'url': 'https://example.com',
+        'maxPages': 50
+    }
+    
+    response = requests.post(url, json=data, headers=headers)
+    return response.json()
+
+result = start_scan()
+print(result)</code></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%- include('partials/footer') %>

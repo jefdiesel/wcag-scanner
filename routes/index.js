@@ -3,6 +3,14 @@ const router = express.Router();
 const path = require('path');
 const { allAsync } = require('../db/db');
 
+ * API Documentation route
+ */
+router.get('/api-docs', (req, res) => {
+  res.render('api-docs', {
+    title: 'API Documentation'
+  });
+});
+
 // Utility function to sanitize URL for filenames
 function sanitizeUrlForFilename(url) {
   return url
