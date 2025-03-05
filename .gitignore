@@ -6,3 +6,6 @@ data/*.db
 .env
 .DS_Store
 public/reports/
+data
+data_soth
+datamarch1
