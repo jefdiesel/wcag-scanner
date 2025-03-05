@@ -7,5 +7,5 @@ data/*.db
 .DS_Store
 public/reports/
 data
-data_soth
-datamarch1
+data_soth/*db
+datamarch1/*
