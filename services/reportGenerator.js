@@ -128,6 +128,26 @@ async function generatePDF(scanId, url) {
       }
     });
 
+  // Get total pages scanned (direct count from our results)
+  const totalPagesScanned = rows.length;
+  
+  // Extract and count unique URLs from all links arrays to get total pages found
+  let allFoundUrls = new Set();
+  
+  // Process each page's links to count total unique URLs found
+  rows.forEach(row => {
+    const links = safeJsonParse(row.links, []);
+    links.forEach(link => {
+      if (link && typeof link === 'string') {
+        allFoundUrls.add(link);
+      }
+    });
+    // Also add the scanned URL itself
+    allFoundUrls.add(row.url);
+  });
+  
+  const totalPagesFound = allFoundUrls.size;
+
     // Initialize issue counters and categories using the same counting logic as the UI
     const issueCounters = {
       total: 0,
@@ -266,6 +286,18 @@ async function generatePDF(scanId, url) {
        .text(`Critical issues: ${issueCounters.critical} (${(issueCounters.critical/issueCounters.total*100).toFixed(1)}% of total)`)
        .text(`Warning issues: ${issueCounters.warning} (${(issueCounters.warning/issueCounters.total*100).toFixed(1)}% of total)`)
        .moveDown(0.5);
+
+// Page Statistics Section
+  doc.fontSize(14)
+     .font('Helvetica-Bold')
+     .text('Page Statistics')
+     .moveDown(0.5)
+     .fontSize(12)
+     .font('Helvetica')
+     .text(`Total Pages Discovered: ${totalPagesFound}`)
+     .text(`Total Pages Scanned: ${totalPagesScanned}`)
+     .text(`Coverage: ${Math.round((totalPagesScanned / Math.max(totalPagesFound, 1)) * 100)}%`)
+     .moveDown(1);
 
     // Severity table - optimized structure
     doc.font('Helvetica-Bold')
