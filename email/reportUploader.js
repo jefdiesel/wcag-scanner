@@ -277,13 +277,23 @@ async function checkCompletedScans() {
  * Start the report processor
  */
 function startReportProcessor() {
-  logger.info('Starting report processor service');
-  
-  // Run immediately
-  checkCompletedScans();
-  
-  // Then run on interval (every 2 minutes)
-  setInterval(checkCompletedScans, 120000);
+  return new Promise((resolve, reject) => {
+    try {
+      logger.info('Starting report processor service');
+      
+      // Run immediately
+      checkCompletedScans();
+      
+      // Then run on interval (every 2 minutes)
+      const intervalId = setInterval(checkCompletedScans, 120000);
+      
+      // Resolve with the interval ID for potential future cancellation
+      resolve(intervalId);
+    } catch (error) {
+      logger.error(`Failed to start report processor: ${error.message}`);
+      reject(error);
+    }
+  });
 }
 
 module.exports = {
