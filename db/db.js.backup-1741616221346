@@ -102,28 +102,6 @@ async function initDatabase() {
       )
     `);
     
-    // Add the email requests table
-    await runAsync(`
-      CREATE TABLE IF NOT EXISTS scan_email_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        scan_id TEXT NOT NULL,
-        url TEXT NOT NULL, 
-        requester_email TEXT NOT NULL,
-        requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        report_sent BOOLEAN DEFAULT 0,
-        report_sent_at TIMESTAMP
-      )
-    `);
-    
-    // Add indexes for the email table
-    await runAsync(`
-      CREATE INDEX IF NOT EXISTS idx_scan_email_requests_scan_id ON scan_email_requests(scan_id)
-    `);
-    
-    await runAsync(`
-      CREATE INDEX IF NOT EXISTS idx_scan_email_requests_report_sent ON scan_email_requests(report_sent)
-    `);
-
     logger.info('Database initialization complete');
   } catch (error) {
     logger.error(`Database initialization failed: ${error.stack}`);

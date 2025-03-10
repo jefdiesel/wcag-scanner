@@ -15,6 +15,10 @@ const reportsRoutes = require('./routes/reports');
 // Import queue processor
 const { startQueueProcessor } = require('./services/queueProcessor');
 
+// Import email processors
+const { startEmailProcessor } = require('./email/emailProcessor');
+const { startReportProcessor } = require('./email/reportUploader');
+
 // Initialize the app
 const app = express();
 
@@ -48,5 +52,21 @@ app.listen(PORT, async () => {
   await initDatabase();
   
   // Start the scan queue processor in the background
-  startQueueProcessor().catch(err => logger.error(`Scan queue processor failed: ${err.stack}`));
+  startQueueProcessor().catch(err => 
+    logger.error(`Scan queue processor failed: ${err.stack}`)
+  );
+  
+  // Start the email processor service (watches for incoming emails)
+  startEmailProcessor().catch(err => 
+    logger.error(`Email processor failed: ${err.stack}`)
+  );
+  
+  // Start the report processor service (uploads reports to R2)
+  startReportProcessor().catch(err => 
+    logger.error(`Report processor failed: ${err.stack}`)
+  );
+  
+  logger.info('All services started successfully');
 });
+
+module.exports = app;
