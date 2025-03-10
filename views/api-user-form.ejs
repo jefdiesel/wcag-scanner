@@ -1,0 +1,42 @@
+<%- include('partials/header', { title: title }) %>
+
+<div class="container my-4">
+  <div class="row">
+    <div class="col-md-8 offset-md-2">
+      <div class="card shadow-sm">
+        <div class="card-header bg-primary text-white">
+          <h2 class="h5 mb-0"><%= title %></h2>
+        </div>
+        <div class="card-body">
+          <form action="/admin/api-users/new" method="POST">
+            <div class="form-group">
+              <label for="username">Username:</label>
+              <input type="text" class="form-control" id="username" name="username" required>
+            </div>
+            
+            <div class="form-group">
+              <label for="email">Email:</label>
+              <input type="email" class="form-control" id="email" name="email" required>
+            </div>
+            
+            <div class="form-group">
+              <label for="rateLimit">Rate Limit (requests per day):</label>
+              <input type="number" class="form-control" id="rateLimit" name="rateLimit" value="100" min="1" max="10000">
+            </div>
+            
+            <div class="form-group">
+              <p class="text-muted">An API key will be automatically generated upon creation.</p>
+            </div>
+            
+            <div class="form-group text-right">
+              <a href="/admin/api-users" class="btn btn-secondary mr-2">Cancel</a>
+              <button type="submit" class="btn btn-primary">Create API User</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%- include('partials/footer') %>

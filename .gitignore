@@ -6,3 +6,8 @@ data/*.db
 .env
 .DS_Store
 public/reports/
+data
+data_soth/*db
+datamarch1/*
+data_soth/wcag_scanner.db
+datamarch1/wcag_scanner.db
