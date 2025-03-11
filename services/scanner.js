@@ -1,138 +1,3 @@
-const fs = require('fs');
-const path = require('path');
-const { runAsync } = require('../db/db');
-const logger = require('../utils/logger');
-
-// Import all analyzers
-const { analyzePdf } = require('./analyzers/pdfAnalyzer');
-const { analyzeMediaContent } = require('./analyzers/mediaAnalyzer');
-const { analyzeKeyboardNavigation } = require('./analyzers/keyboardAnalyzer');
-const { identifyManualReviewItems } = require('./analyzers/manualReviewAnalyzer');
-const { checkAccessibilityStatement } = require('./analyzers/accessibilityStatementAnalyzer');
-
-/**
- * Performs WCAG accessibility testing on a page
- * @param {import('playwright').Page} page - Playwright page object
- * @param {string} url - URL to test
- * @returns {Promise<Object>} - Test results
- */
-async function testAccessibility(page, url) {
-  try {
-    // Check if URL is a PDF
-    const isPdf = url.toLowerCase().endsWith('.pdf');
-    if (isPdf) {
-      return await analyzePdf(url, page.context().browser());
-    }
-
-    // Inject axe-core library
-    await page.addScriptTag({
-      path: require.resolve('axe-core')
-    });
-
-    // Run axe-core analysis with WCAG 2.2 checks
-    const axeResults = await page.evaluate(async () => {
-      return await new Promise((resolve) => {
-        window.axe.configure({
-          reporter: 'v2',
-          // Enable all rules for maximum coverage including WCAG 2.2
-          rules: [
-            // Enable WCAG 2.2 specific rules
-            { id: 'focus-visible-enhanced', enabled: true },
-            { id: 'target-size', enabled: true },
-            { id: 'dragging-movements', enabled: true },
-            { id: 'accessible-authentication', enabled: true },
-            { id: 'redundant-entry', enabled: true },
-            { id: 'help-available', enabled: true },
-            { id: 'focus-appearance-enhanced', enabled: true },
-            // Enable all rules
-            { id: '*', enabled: true }
-          ]
-        });
-        
-        window.axe.run(document, {
-          runOnly: {
-            type: 'tag',
-            values: ['wcag2a', 'wcag2aa', 'wcag2aaa', 'best-practice']
-          }
-        }, (err, results) => {
-          if (err) resolve({ error: err.message });
-          resolve(results);
-        });
-      });
-    });
-
-    // Run additional specialized analyzers
-    const mediaResults = await analyzeMediaContent(page, url);
-    const keyboardResults = await analyzeKeyboardNavigation(page, url);
-    const manualReviewResults = await identifyManualReviewItems(page, url);
-    const a11yStatementResults = await checkAccessibilityStatement(page, url);
-    
-    // Combine all violations
-    const allViolations = [
-      ...(axeResults.violations || []),
-      ...(mediaResults.violations || []),
-      ...(keyboardResults.violations || []),
-      ...(manualReviewResults.violations || []),
-      ...(a11yStatementResults.violations || [])
-    ];
-    
-    // Calculate combined violation counts
-    const violationCounts = {
-      total: 0,
-      critical: 0,
-      warning: 0,
-      info: 0
-    };
-    
-    allViolations.forEach(violation => {
-      const nodeCount = violation.nodes?.length || 0;
-      violationCounts.total += nodeCount;
-      
-      // Map impact levels to our severity categories
-      switch (violation.impact) {
-        case 'critical':
-        case 'serious':
-          violationCounts.critical += nodeCount;
-          break;
-        case 'moderate':
-        case 'minor':
-          violationCounts.warning += nodeCount;
-          break;
-        default:
-          violationCounts.info += nodeCount;
-          break;
-      }
-    });
-    
-    // Return comprehensive results
-    return {
-      url,
-      violations: allViolations,
-      passes: axeResults.passes || [],
-      incomplete: axeResults.incomplete || [],
-      inapplicable: axeResults.inapplicable || [],
-      violationCounts,
-      additionalAnalysis: {
-        hasMediaIssues: mediaResults.violationCounts.total > 0,
-        hasKeyboardIssues: keyboardResults.violationCounts.total > 0,
-        needsManualReview: manualReviewResults.violationCounts.total > 0,
-        hasAccessibilityStatement: a11yStatementResults.violations.length === 0
-      }
-    };
-  } catch (error) {
-    logger.error(`Error testing accessibility for ${url}: ${error.message}`);
-    return {
-      url,
-      error: error.message,
-      violations: [],
-      passes: [],
-      incomplete: [],
-      inapplicable: [],
-      violationCounts: { total: 0, critical: 0, warning: 0, info: 0 }
-    };
-  }
-}
-
 /**
  * Crawls a website and tests pages for accessibility
  * @param {string} baseUrl - Starting URL
@@ -145,8 +10,11 @@ async function testAccessibility(page, url) {
  * @returns {Promise<void>}
  */
 async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, progressCallback = () => {}, scanId, maxDepth = 5) {
+  // Normalize the base URL
+  baseUrl = normalizeUrl(baseUrl);
+  
   const visitedUrls = new Set();
-  const queue = [{ url: baseUrl, depth: currentDepth }];
+  const crawlQueue = [{ url: baseUrl, depth: currentDepth }];
   let pagesScanned = 0;
   const allFoundUrls = new Set(); // Track all discovered URLs
   
@@ -154,14 +22,14 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
 
   // Function to log current scanning status
   const logScanStatus = () => {
-    logger.info(`Scan status for ${baseUrl}: Found ${allFoundUrls.size + queue.length} URLs, ${queue.length} in queue, ${pagesScanned}/${maxPages} pages scanned`);
+    logger.info(`Scan status for ${baseUrl}: Found ${allFoundUrls.size + crawlQueue.length} URLs, ${crawlQueue.length} in queue, ${pagesScanned}/${maxPages} pages scanned`);
   };
 
   // Initial status log
   logScanStatus();
 
-  while (queue.length > 0 && pagesScanned < maxPages) {
-    const { url, depth } = queue.shift();
+  while (crawlQueue.length > 0 && pagesScanned < maxPages) {
+    const { url, depth } = crawlQueue.shift();
     
     // Skip if already visited or exceeded max depth
     if (visitedUrls.has(url) || depth > maxDepth) continue;
@@ -169,7 +37,7 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
     visitedUrls.add(url);
     
     try {
-      logger.info(`Scanning page ${pagesScanned + 1}/${maxPages} (${queue.length} in queue): ${url}`);
+      logger.info(`Scanning page ${pagesScanned + 1}/${maxPages} (${crawlQueue.length} in queue): ${url}`);
       
       // Create new context and page for each URL to avoid state leakage
       const context = await browser.newContext({
@@ -201,59 +69,102 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
       // Extract links if we're not at max depth
       let links = [];
       if (depth < maxDepth) {
-        links = await page.evaluate(() => {
-          const baseUrl = window.location.origin;
-          return Array.from(document.querySelectorAll('a[href]'))
-            .map(a => {
-              try {
-                const href = a.href;
-                // Construct absolute URL
-                if (!href.startsWith('http')) {
-                  return new URL(href, baseUrl).href;
-                }
-                return href;
-              } catch (e) {
-                return null;
-              }
-            })
-            .filter(url => {
-              if (!url) return false;
+        // Use a more controlled method to extract links
+        links = await page.$$eval('a[href]', (anchors, baseUrl) => {
+          return anchors.map(a => {
+            try {
+              // Get the href attribute
+              let href = a.getAttribute('href');
               
-              try {
-                const urlObj = new URL(url);
-                
-                // Keep URLs from the same origin
-                const sameOrigin = urlObj.origin === baseUrl;
-                
-                // Filter out common non-HTML resources
-                const isLikelyPage = !url.match(/\.(jpg|jpeg|png|gif|pdf|zip|doc|xls|ppt|mp3|mp4|avi|mov|css|js|json|xml|woff|woff2|ttf|svg)$/i);
-                
-                // Skip anchor links to same page
-                const notJustAnchor = !(urlObj.pathname === window.location.pathname && urlObj.hash);
-                
-                return sameOrigin && isLikelyPage && notJustAnchor;
-              } catch (e) {
-                return false;
+              // Skip if empty or javascript: or mailto: links
+              if (!href || href.startsWith('javascript:') || href.startsWith('mailto:') || 
+                  href.startsWith('#') || href === '/') {
+                return null;
               }
-            });
-        });
-        
-        // Also check for PDF files specifically to test them
-        const pdfLinks = await page.evaluate(() => {
-          const baseUrl = window.location.origin;
-          return Array.from(document.querySelectorAll('a[href$=".pdf"]'))
-            .map(a => {
+              
+              // Convert to absolute URL
+              let absoluteUrl;
               try {
-                return new URL(a.href, baseUrl).href;
+                absoluteUrl = new URL(href, baseUrl).href;
               } catch (e) {
                 return null;
               }
-            })
-            .filter(url => url);
+              
+              // Very strict filtering - only allow clean URLs
+              try {
+                const urlObj = new URL(absoluteUrl);
+                
+                // Must be http or https
+                if (!urlObj.protocol.startsWith('http')) {
+                  return null;
+                }
+                
+                // Must be same origin
+                if (urlObj.origin !== baseUrl) {
+                  return null;
+                }
+                
+                // No file extensions we don't want to crawl
+                if (urlObj.pathname.match(/\.(jpg|jpeg|png|gif|css|js|json|xml|zip|doc|xls|mp3|mp4|avi|mov|woff|woff2|ttf|svg)$/i)) {
+                  return null;
+                }
+                
+                // Don't allow URLs with periods in the path (except domain and file extension)
+                const pathParts = urlObj.pathname.split('/');
+                const lastPart = pathParts[pathParts.length - 1];
+                
+                // If any path part has suspicious patterns, reject
+                if (pathParts.some(part => part.includes('.') && part !== lastPart)) {
+                  return null;
+                }
+                
+                // For the last part, be more careful
+                if (lastPart && lastPart.includes('.')) {
+                  // Allow common web file extensions
+                  if (!lastPart.match(/\.(html|php|aspx|jsp|pdf)$/i)) {
+                    // For anything else, ensure it's simple
+                    if (lastPart.split('.').length > 2) { // More than one period
+                      return null;
+                    }
+                  }
+                }
+                
+                // No fragments
+                urlObj.hash = '';
+                
+                // No query parameters (but convert to clean URL instead of rejecting)
+                if (urlObj.search) {
+                  return urlObj.origin + urlObj.pathname;
+                }
+                
+                return urlObj.href;
+              } catch (e) {
+                return null;
+              }
+            } catch (e) {
+              return null;
+            }
+          }).filter(url => url !== null);
+        }, url);
+        
+        // Further filter the links on the server side
+        links = links.filter(link => {
+          try {
+            // Only keep very clean URLs
+            return (
+              isValidCrawlUrl(link, baseUrl) && 
+              shouldAllowUrl(link)
+            );
+          } catch (e) {
+            return false;
+          }
         });
         
-        // Add PDFs to the links array
-        links = [...links, ...pdfLinks];
+        // Normalize all URLs to prevent variants
+        links = links.map(link => normalizeUrl(link));
+        
+        // Remove duplicates
+        links = [...new Set(links)];
         
         // Add new links to queue and to found URLs set
         let newLinksCount = 0;
@@ -264,8 +175,9 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
             allFoundUrls.add(link); // Add to all found URLs
           }
           
-          if (!visitedUrls.has(link) && !queue.some(item => item.url === link)) {
-            queue.push({ url: link, depth: depth + 1 });
+          // Modify this to use the internal crawlQueue
+          if (!visitedUrls.has(link) && !crawlQueue.some(item => item.url === link)) {
+            crawlQueue.push({ url: link, depth: depth + 1 });
           }
         });
         
@@ -300,10 +212,10 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
       
       // Update progress with both scanned and found counts, and queue size
       pagesScanned++;
-      progressCallback(pagesScanned, allFoundUrls.size, queue.length);
+      progressCallback(pagesScanned, allFoundUrls.size, crawlQueue.length);
       
       // Log status periodically
-      if (pagesScanned % 5 === 0 || queue.length % 20 === 0) {
+      if (pagesScanned % 5 === 0 || crawlQueue.length % 20 === 0) {
         logScanStatus();
       }
       
@@ -329,7 +241,7 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
       
       // Still count this as a scanned page
       pagesScanned++;
-      progressCallback(pagesScanned, allFoundUrls.size, queue.length);
+      progressCallback(pagesScanned, allFoundUrls.size, crawlQueue.length);
     }
   }
   
@@ -342,8 +254,3 @@ async function crawlAndTest(baseUrl, browser, maxPages = 100, currentDepth = 1, 
     ['completed', scanId]
   );
 }
-
-module.exports = {
-  testAccessibility,
-  crawlAndTest
-};

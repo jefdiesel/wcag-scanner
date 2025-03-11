@@ -4,6 +4,7 @@ const { generatePDF, generateCSV } = require('./reportGenerator');
 const { crawlAndTest } = require('./scanner');
 const logger = require('../utils/logger');
 const { sanitizeUrlForFilename } = require('../utils/helpers');
+const { shouldAllowUrl } = require('../utils/urlFilter');
 const { PLAYWRIGHT_TIMEOUT, PLAYWRIGHT_ARGS } = require('../config/config');
 const { URL } = require('url');
 
@@ -70,6 +71,26 @@ function unregisterActiveDomain(domain) {
 }
 
 /**
+ * Check if URL passes all validation filters
+ * @param {string} url - URL to validate
+ * @returns {boolean} True if URL passes all filters
+ */
+function validateUrl(url) {
+  // Skip if URL is empty or not a string
+  if (!url || typeof url !== 'string') {
+    return false;
+  }
+  
+  // Use the common URL filter utility
+  if (!shouldAllowUrl(url)) {
+    logger.debug(`🚫 URL rejected by filter: ${url}`);
+    return false;
+  }
+  
+  return true;
+}
+
+/**
  * Process the scan queue continuously
  * @returns {Promise<NodeJS.Timeout>} Interval ID for the queue processor
  */
@@ -106,6 +127,14 @@ function startQueueProcessor() {
           // Find the first URL that isn't from a domain we're already scanning
           let selectedItem = null;
           for (const item of queueItems) {
+            // Validate URL before processing
+            if (!validateUrl(item.url)) {
+              // Remove invalid URLs from queue immediately
+              await runAsync('DELETE FROM queue WHERE url = ?', [item.url]);
+              logger.info(`🚫 Removed invalid URL from queue: ${item.url}`);
+              continue;
+            }
+            
             const domain = extractDomain(item.url);
             if (!isDomainActive(domain)) {
               selectedItem = item;
@@ -115,7 +144,7 @@ function startQueueProcessor() {
           
           // If all URLs in our batch are from domains already being scanned, skip
           if (!selectedItem) {
-            logger.debug('🔍 All queued URLs are from domains already being scanned');
+            logger.debug('🔍 All queued URLs are from domains already being scanned or are invalid');
             return;
           }
           
@@ -266,6 +295,34 @@ function startQueueProcessor() {
           logger.error(`❌ Error in cleanup function: ${error.message}`);
         }
       };
+      
+      // Additional cleanup function to remove invalid URLs from the queue
+      const cleanupInvalidUrls = async () => {
+        try {
+          // Get all URLs from the queue
+          const queueItems = await allAsync('SELECT url FROM queue');
+          
+          if (!queueItems || queueItems.length === 0) {
+            return;
+          }
+          
+          let removedCount = 0;
+          
+          // Check each URL and remove invalid ones
+          for (const item of queueItems) {
+            if (!validateUrl(item.url)) {
+              await runAsync('DELETE FROM queue WHERE url = ?', [item.url]);
+              removedCount++;
+            }
+          }
+          
+          if (removedCount > 0) {
+            logger.info(`🧹 Removed ${removedCount} invalid URLs from the queue during cleanup`);
+          }
+        } catch (error) {
+          logger.error(`❌ Error in URL cleanup function: ${error.message}`);
+        }
+      };
 
       // Use a more reasonable interval - not too frequent to cause overload
       const intervalId = setInterval(() => {
@@ -276,10 +333,18 @@ function startQueueProcessor() {
       
       // Cleanup interval - runs every 2 minutes
       const cleanupId = setInterval(cleanupActiveDomains, 120000);
+      
+      // URL cleanup interval - runs every 5 minutes
+      const urlCleanupId = setInterval(cleanupInvalidUrls, 300000);
 
       // Run immediately
       processQueue().catch(error => 
         logger.error(`❌ Initial queue processing error: ${error.message}`)
+      );
+      
+      // Also run URL cleanup immediately
+      cleanupInvalidUrls().catch(error =>
+        logger.error(`❌ Initial URL cleanup error: ${error.message}`)
       );
 
       logger.info('🟢 Queue Processor: Initialized successfully');
