@@ -6,6 +6,12 @@ const logger = require('../utils/logger');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
+// Track connection attempts to implement backoff strategy
+let connectionAttempts = 0;
+let lastConnectionTime = 0;
+const MAX_RETRIES = 3;
+const BACKOFF_TIME = 15 * 60 * 1000; // 15 minutes in milliseconds
+
 /**
  * Create IMAP client with current configuration
  * @returns {imaplib} IMAP client instance
@@ -19,7 +25,10 @@ const createImapClient = () => {
     tls: true,
     tlsOptions: { 
       rejectUnauthorized: false 
-    }
+    },
+    // Add connection timeout options
+    connTimeout: 30000, // 30 seconds connection timeout (reduced from default)
+    authTimeout: 30000  // 30 seconds auth timeout
   });
 };
 
@@ -36,6 +45,47 @@ const smtpClient = nodemailer.createTransport({
     rejectUnauthorized: false
   }
 });
+
+/**
+ * Filter for URLs to prevent scanning local report URLs and breaking recursive loops
+ * @param {string} url - URL to check
+ * @returns {boolean} - True if URL should be allowed, false if it should be filtered out
+ */
+function shouldAllowUrl(url) {
+  try {
+    // Check if it's a local report URL
+    if (url.includes('/reports/') || url.includes('localhost')) {
+      return false;
+    }
+    
+    // Check for common report file extensions
+    if (url.endsWith('.pdf') || url.endsWith('.csv') || 
+        url.includes('.pdf') || url.includes('.csv')) {
+      return false;
+    }
+    
+    // Check for URLs that are responses to email scan requests
+    // These often have text like "Scan", "Thank", or "Error:" appended
+    const scanKeywords = ['Scan', 'Thank', 'Error:', 'pdf-', 'csv-'];
+    if (scanKeywords.some(keyword => url.includes(keyword))) {
+      const urlObj = new URL(url);
+      const pathParts = urlObj.pathname.split('/');
+      const lastPart = pathParts[pathParts.length - 1];
+      
+      // If the last part of the URL ends with these keywords, it's likely a user-added
+      // URL from copy-pasting from an email or error message
+      if (scanKeywords.some(keyword => lastPart.endsWith(keyword))) {
+        return false;
+      }
+    }
+    
+    // Otherwise, let the URL through
+    return true;
+  } catch (error) {
+    // If we can't parse the URL, better to filter it out
+    return false;
+  }
+}
 
 /**
  * Extract valid URLs from text
@@ -56,6 +106,11 @@ function extractUrls(text) {
     .filter(url => {
       try {
         new URL(url);
+        // Apply the URL filter
+        if (!shouldAllowUrl(url)) {
+          logger.debug(`🚫 URL filtered out by policy: ${url}`);
+          return false;
+        }
         return true;
       } catch (e) {
         logger.debug(`❌ Invalid URL filtered out: ${url} - ${e.message}`);
@@ -98,25 +153,52 @@ async function sendEmailReply(to, originalSubject, message) {
  * @param {string} url - URL to scan
  * @param {string} requester - Email of the requester
  * @param {number} [maxPages=100] - Maximum pages to scan
- * @returns {string} Scan ID
+ * @returns {string|null} Scan ID or null if URL was rejected
  */
 async function addUrlToQueue(url, requester, maxPages = 100) {
   try {
-    const scanId = Date.now().toString() + Math.random().toString(36).substring(2, 7);
-    const formattedUrl = url.startsWith('http') ? url : `https://${url}`;
-    logger.debug(`🔗 Queueing URL: ${formattedUrl} (original: ${url})`);
+    // Clean the URL
+    let cleanUrl = url.trim();
     
-    await runAsync('INSERT INTO queue (url, max_pages) VALUES (?, ?)', [formattedUrl, maxPages]);
-    await runAsync(
-      'INSERT INTO scan_email_requests (scan_id, url, requester_email) VALUES (?, ?, ?)',
-      [scanId, formattedUrl, requester]
+    // Add protocol if missing
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      cleanUrl = `https://${cleanUrl}`;
+    }
+    
+    // Validate URL
+    if (!shouldAllowUrl(cleanUrl)) {
+      logger.warn(`🚫 URL rejected by filter: ${cleanUrl}`);
+      return null;
+    }
+    
+    const scanId = Date.now().toString() + Math.random().toString(36).substring(2, 7);
+    logger.debug(`🔗 Queueing URL: ${cleanUrl} (original: ${url})`);
+    
+    // Check if this URL is already in the queue
+    const existingQueue = await runAsync(
+      'SELECT COUNT(*) as count FROM queue WHERE url = ?', 
+      [cleanUrl]
     );
     
-    logger.info(`🔗 URL ${formattedUrl} added to queue with scan ID ${scanId}`);
+    // Only add to queue if not already present
+    if (existingQueue && existingQueue.count && existingQueue.count > 0) {
+      logger.info(`🔄 URL ${cleanUrl} already in queue, not adding duplicate`);
+    } else {
+      await runAsync('INSERT INTO queue (url, max_pages) VALUES (?, ?)', [cleanUrl, maxPages]);
+      logger.info(`🔗 URL ${cleanUrl} added to queue`);
+    }
+    
+    // Add to scan_email_requests table
+    await runAsync(
+      'INSERT INTO scan_email_requests (scan_id, url, requester_email) VALUES (?, ?, ?)',
+      [scanId, cleanUrl, requester]
+    );
+    
+    logger.info(`🔗 Created scan request with ID ${scanId} for URL ${cleanUrl}`);
     return scanId;
   } catch (error) {
     logger.error(`❌ Error adding URL to queue: ${error.message}`);
-    throw error;
+    return null;
   }
 }
 
@@ -125,6 +207,13 @@ async function addUrlToQueue(url, requester, maxPages = 100) {
  * @returns {Promise<Array>} Array of scan requests
  */
 async function checkEmails() {
+  // Implement backoff strategy for connection issues
+  const now = Date.now();
+  if (connectionAttempts >= MAX_RETRIES && (now - lastConnectionTime) < BACKOFF_TIME) {
+    logger.warn(`⚠️ Email connection attempts exceeded ${MAX_RETRIES} times. Backing off until ${new Date(lastConnectionTime + BACKOFF_TIME).toLocaleTimeString()}`);
+    return Promise.resolve([]);
+  }
+  
   return new Promise((resolve, reject) => {
     logger.info('📨 Starting email scan request check');
 
@@ -132,6 +221,10 @@ async function checkEmails() {
     const scanRequests = new Set();
     let messagesProcessed = 0;
     let totalMessages = 0;
+    
+    // Update connection tracking
+    connectionAttempts++;
+    lastConnectionTime = Date.now();
 
     imapClient.on('error', (err) => {
       logger.error(`❌ IMAP Connection Error: ${err.message}`);
@@ -140,6 +233,8 @@ async function checkEmails() {
     });
 
     imapClient.once('ready', () => {
+      // Reset connection attempts on success
+      connectionAttempts = 0;
       logger.debug('🔐 IMAP client connected successfully');
 
       imapClient.openBox('INBOX', false, (err, box) => {
@@ -252,11 +347,12 @@ async function checkEmails() {
       });
     });
 
+    // Reduce connection timeout to avoid hanging
     const connectionTimeout = setTimeout(() => {
       logger.error('❌ IMAP Connection timed out');
       imapClient.destroy();
       reject(new Error('IMAP Connection timed out'));
-    }, 10000);
+    }, 30000); // 30 seconds timeout
 
     imapClient.connect();
     imapClient.on('ready', () => clearTimeout(connectionTimeout));
@@ -269,6 +365,14 @@ async function checkEmails() {
 async function processEmailRequests() {
   try {
     logger.debug('🔄 Starting email request processing');
+    
+    // Check if we should skip due to backoff
+    const now = Date.now();
+    if (connectionAttempts >= MAX_RETRIES && (now - lastConnectionTime) < BACKOFF_TIME) {
+      logger.warn(`⚠️ Skipping email check due to connection backoff period. Will resume at ${new Date(lastConnectionTime + BACKOFF_TIME).toLocaleTimeString()}`);
+      return;
+    }
+    
     const scanRequests = await checkEmails();
     logger.info(`📬 Total scan requests found: ${scanRequests.length}`);
 
@@ -276,18 +380,34 @@ async function processEmailRequests() {
       try {
         logger.info(`🔗 Processing scan request for URL: ${request.url}`);
         const scanId = await addUrlToQueue(request.url, request.requester);
-        await sendEmailReply(
-          request.requester, 
-          request.subject, 
-          `Your scan request for ${request.url} has been received and added to our queue.
+        
+        // Only send a confirmation email if the URL was accepted
+        if (scanId) {
+          await sendEmailReply(
+            request.requester, 
+            request.subject, 
+            `Your scan request for ${request.url} has been received and added to our queue.
 
 We'll email you when the scan is complete with a link to download your accessibility report.
 
 Scan ID: ${scanId}
 
 Thank you for using our WCAG Accessibility Scanner.`
-        );
-        logger.info(`✅ Successfully processed scan request for ${request.url}`);
+          );
+          logger.info(`✅ Successfully processed scan request for ${request.url}`);
+        } else {
+          // URL was filtered out
+          await sendEmailReply(
+            request.requester, 
+            request.subject, 
+            `We could not process your scan request for ${request.url}.
+
+The URL appears to be invalid or doesn't meet our scanning criteria. Please make sure you're submitting a valid website URL (not a PDF, image, or other file).
+
+Please try again with a different URL or contact support if you believe this is an error.`
+          );
+          logger.info(`🚫 Rejected scan request for filtered URL: ${request.url}`);
+        }
       } catch (requestError) {
         logger.error(`❌ Error processing scan request for ${request.url}: ${requestError.message}`);
         await sendEmailReply(
@@ -317,17 +437,25 @@ function startEmailProcessor() {
     try {
       logger.info('🚀 EMAIL PROCESSOR: Initiating startup process');
       
-      processEmailRequests()
-        .then(() => logger.info('✅ EMAIL PROCESSOR: Initial email check completed successfully'))
-        .catch(initialError => logger.error(`❌ EMAIL PROCESSOR: Initial email check failed: ${initialError.message}`));
+      // Initial run is optional based on environment variable
+      if (process.env.EMAIL_CHECK_ON_STARTUP !== 'false') {
+        processEmailRequests()
+          .then(() => logger.info('✅ EMAIL PROCESSOR: Initial email check completed successfully'))
+          .catch(initialError => logger.error(`❌ EMAIL PROCESSOR: Initial email check failed: ${initialError.message}`));
+      } else {
+        logger.info('⏭️ EMAIL PROCESSOR: Skipping initial email check as per configuration');
+      }
+      
+      // Adjust interval based on environment variables with a longer default
+      const checkInterval = parseInt(process.env.EMAIL_CHECK_INTERVAL || '300000', 10); // Default to 5 minutes
       
       const intervalId = setInterval(() => {
         logger.debug('🕒 EMAIL PROCESSOR: Running scheduled email check');
         processEmailRequests()
           .catch(intervalError => logger.error(`❌ EMAIL PROCESSOR: Scheduled email check failed: ${intervalError.message}`));
-      }, parseInt(process.env.EMAIL_CHECK_INTERVAL || '60000', 10));
+      }, checkInterval);
       
-      logger.info('✅ EMAIL PROCESSOR: Service initialized successfully');
+      logger.info(`✅ EMAIL PROCESSOR: Service initialized successfully with check interval of ${checkInterval}ms`);
       resolve(intervalId);
     } catch (setupError) {
       logger.error(`❌ EMAIL PROCESSOR: Startup failed: ${setupError.message}`);
