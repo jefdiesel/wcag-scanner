@@ -67,7 +67,7 @@
       <div class="card-body">
         <% if (!results) { %>
           <div class="bg-light p-4 rounded">
-            <form id="scanForm" action="/scan/test" method="post">
+            <form id="scanForm" action="/scan/submit" method="post">
               <div class="form-group row mb-3">
                 <label for="url" class="col-sm-4 col-form-label h5">Website URL:</label>
                 <div class="col-sm-8">
@@ -267,15 +267,14 @@
           // Check if we're just queueing the scan
           if (queueScan) {
             // Submit form data via AJAX to queue the scan
-            fetch('/scan/test', {
+            fetch('/queue/add', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
                 url: url,
-                maxPages: maxPages,
-                queue: true
+                maxPages: maxPages
               }),
             })
             .then(response => response.json())
@@ -288,7 +287,7 @@
               }
             })
             .catch(error => {
-              console.error('Error:', error);
+console.error('Error:', error);
               alert('An error occurred while trying to queue the scan.');
             });
             return;
@@ -299,8 +298,8 @@
           document.getElementById('scanInfo').style.display = 'block';
           document.getElementById('startScan').disabled = true;
           
-          // Submit form data via AJAX
-          fetch('/scan/test', {
+          // Submit form data via AJAX for immediate scan
+          fetch('/scan/submit', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -321,7 +320,7 @@
             } else {
               // Configure SSE for progress updates
               const scanId = data.scanId;
-              const eventSource = new EventSource('/progress?scanId=' + scanId);
+              const eventSource = new EventSource('/scan/progress?scanId=' + scanId);
               let pagesFound = 0;
               let pagesScanned = 0;
               let pagesInQueue = 0;
@@ -403,7 +402,7 @@
                   if (percentage >= 100 || progressData.completed) {
                     eventSource.close();
                     // Open results page when scan is complete
-                    window.location.href = '/results/' + scanId;
+                    window.location.href = '/scan/results/' + scanId;
                   }
                 } catch (e) {
                   // Handle legacy format - just a number
@@ -418,7 +417,7 @@
                   if (percentage >= 100) {
                     eventSource.close();
                     // Open results page when scan is complete
-                    window.location.href = '/results/' + scanId;
+                    window.location.href = '/scan/results/' + scanId;
                   }
                 }
               };

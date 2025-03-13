@@ -22,18 +22,22 @@ router.get('/', async (req, res) => {
     
     // Format completed scans data for template
     const formattedScans = completedScans.map(row => {
-      const sanitizedUrl = row.url.replace(/^https?:\/\//, '').replace(/[^\w.-]/g, '_').toLowerCase();
+      const sanitizedUrl = sanitizeUrlForFilename(row.url);
       
       return {
         scanId: row.scan_id,
         url: row.url,
         status: row.status,
-        pdfUrl: row.report_pdf ? `/reports/${sanitizedUrl}/${row.report_pdf.split('/').pop()}` : null,
-        csvUrl: row.report_csv ? `/reports/${sanitizedUrl}/${row.report_csv.split('/').pop()}` : null
+        pdfUrl: row.report_pdf ? `/reports/${sanitizedUrl}/${path.basename(row.report_pdf)}` : null,
+        csvUrl: row.report_csv ? `/reports/${sanitizedUrl}/${path.basename(row.report_csv)}` : null
       };
     });
     
-    res.render('queue', { queuedUrls, completedScans: formattedScans, success: req.query.success === 'true' });
+    res.render('queue', { 
+      queuedUrls, 
+      completedScans: formattedScans, 
+      success: req.query.success === 'true'
+    });
   } catch (error) {
     logger.error(`Error loading queue page: ${error.stack}`);
     res.status(500).send(`Error loading queue data: ${error.message}`);
@@ -62,7 +66,11 @@ router.post('/add', async (req, res) => {
   const pagesToScan = parseInt(maxPages) || DEFAULT_MAX_PAGES;
   
   if (!trimmedUrl) {
-    return res.status(400).json({ error: 'URL is required' });
+    if (req.headers['content-type'] === 'application/json') {
+      return res.status(400).json({ error: 'URL is required' });
+    } else {
+      return res.status(400).send('URL is required');
+    }
   }
   
   try {
@@ -74,9 +82,12 @@ router.post('/add', async (req, res) => {
     
     logger.info(`URL ${trimmedUrl} with maxPages ${pagesToScan} added to scanning queue`);
     
-    // Redirect back to the queue page with success message
+    // Return response based on request content type
     if (req.headers['content-type'] === 'application/json') {
-      res.json({ message: 'URL added to queue successfully' });
+      res.json({ 
+        message: 'URL added to queue successfully', 
+        success: true 
+      });
     } else {
       res.redirect('/queue?success=true');
     }
@@ -109,8 +120,6 @@ router.post('/remove', async (req, res) => {
     res.status(500).json({ error: 'Failed to remove URL from queue' });
   }
 });
-
-// Add this route to your existing routes/queue.js file
 
 // Delete scan results
 router.post('/delete-scan', async (req, res) => {

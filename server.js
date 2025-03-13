@@ -47,14 +47,24 @@ const dataDir = path.join(__dirname, 'data');
   }
 });
 
-// Register routes
+// Register routes - Make sure paths match what's being used in the templates
 app.use('/', indexRoutes);
-app.use('/scan', scanRoutes);
-app.use('/queue', queueRoutes);
+app.use('/scan', scanRoutes);  // This will handle /scan/submit and /scan/progress
+app.use('/queue', queueRoutes); // This will handle /queue/add and other queue routes
 app.use('/reports', reportsRoutes);
 
 // Error handling middleware
 app.use(errorHandler);
+
+// Define a catch-all route for handling 404 errors
+app.use((req, res) => {
+  logger.warn(`404 Not Found: ${req.method} ${req.url}`);
+  res.status(404).render('error', {
+    title: 'Page Not Found',
+    message: `The requested page (${req.url}) does not exist.`,
+    error: { status: 404 }
+  });
+});
 
 // Background services tracker
 const backgroundServices = {
@@ -67,6 +77,7 @@ const backgroundServices = {
 const server = app.listen(PORT, async () => {
   try {
     logger.info('🚀 Server startup initiated');
+    logger.info(`Server is running on http://localhost:${PORT}`);
 
     // Initialize database
     await initDatabase();
@@ -119,7 +130,8 @@ const server = app.listen(PORT, async () => {
         }
       });
 
-      process.exit(1);
+      // Don't exit process - continue running with just the web server
+      logger.warn('⚠️ Continuing with web server only - some features may be limited');
     }
   } catch (initError) {
     logger.error(`❌ Initialization error: ${initError.message}`);

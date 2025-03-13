@@ -3,8 +3,7 @@ const router = express.Router();
 const path = require('path');
 const { allAsync } = require('../db/db');
 
-// * API Documentation route
-// */
+// API Documentation route
 router.get('/api-docs', (req, res) => {
   res.render('api-docs', {
     title: 'API Documentation'
@@ -21,7 +20,7 @@ function sanitizeUrlForFilename(url) {
 
 // Serve the main page
 router.get('/', (req, res) => {
-  res.render('index', { results: null, maxPages: 1000, csvPath: null, pdfPath: null });
+  res.render('index', { results: null, maxPages: 100, csvPath: null, pdfPath: null });
 });
 
 // Serve results by scan ID
@@ -126,7 +125,7 @@ router.get('/results/:scanId', async (req, res) => {
       }
     }
 
-    res.render('index', { results, maxPages: 1000, csvPath: csvUrl, pdfPath: pdfUrl });
+    res.render('index', { results, maxPages: 100, csvPath: csvUrl, pdfPath: pdfUrl });
   } catch (error) {
     console.error(`Error fetching results for scan ${scanId}:`, error);
     res.status(500).send(`Error fetching results: ${error.message}`);

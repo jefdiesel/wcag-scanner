@@ -15,155 +15,247 @@
             <p class="text-danger">Error: <%= scan.error_message %></p>
           <% } %>
           
-          <% if (scan.status === 'completed') { %>
+          <% if (scan.status === 'completed' && (scan.report_pdf || scan.report_csv)) { %>
             <div class="mt-2">
-              <a href="/reports/<%= scan.report_pdf %>" class="btn btn-primary btn-sm me-2" target="_blank">
-                <i class="bi bi-file-pdf me-1"></i> Download PDF Report
-              </a>
-              <a href="/reports/<%= scan.report_csv %>" class="btn btn-success btn-sm" target="_blank">
-                <i class="bi bi-file-excel me-1"></i> Download CSV Data
-              </a>
+              <% if (scan.report_pdf) { %>
+                <a href="<%= scan.report_pdf %>" class="btn btn-primary btn-sm me-2" target="_blank">
+                  <i class="bi bi-file-pdf me-1"></i> Download PDF Report
+                </a>
+              <% } %>
+              <% if (scan.report_csv) { %>
+                <a href="<%= scan.report_csv %>" class="btn btn-success btn-sm" target="_blank">
+                  <i class="bi bi-file-excel me-1"></i> Download CSV Data
+                </a>
+              <% } %>
             </div>
           <% } %>
         </div>
         
-        <!-- Contact Information and Page Statistics -->
+        <% 
+          // Calculate total issues from all pages
+          let totalIssues = 0;
+          let criticalIssues = 0;
+          let warningIssues = 0;
+          let infoIssues = 0;
+          
+          results.forEach(result => {
+            try {
+              const violations = JSON.parse(result.violations || '{}');
+              if (violations.violationCounts) {
+                totalIssues += violations.violationCounts.total || 0;
+                criticalIssues += violations.violationCounts.critical || 0;
+                warningIssues += violations.violationCounts.warning || 0;
+                infoIssues += violations.violationCounts.info || 0;
+              }
+            } catch (e) {
+              // Skip if parsing fails
+            }
+          });
+        %>
+        
+        <!-- Executive Summary Section -->
         <div class="card mb-4">
-          <div class="card-header bg-info text-white">
-            <h3 class="h5 mb-0">Contact Information & Statistics</h3>
+          <div class="card-header bg-primary text-white">
+            <h3 class="h5 mb-0">Executive Summary</h3>
           </div>
           <div class="card-body">
             <div class="row">
               <div class="col-md-6">
-                <h4 class="h6">Email Addresses</h4>
-                <p>Found <strong><%= stats.totalEmails %></strong> unique email addresses during scan.</p>
+                <h4 class="h6">Issue Breakdown</h4>
+                <ul class="list-group mt-2">
+                  <li class="list-group-item d-flex justify-content-between align-items-center critical">
+                    Critical Issues
+                    <span class="badge bg-danger rounded-pill"><%= criticalIssues %></span>
+                  </li>
+                  <li class="list-group-item d-flex justify-content-between align-items-center warning">
+                    Warning Issues
+                    <span class="badge bg-warning text-dark rounded-pill"><%= warningIssues %></span>
+                  </li>
+                  <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <strong>Total Issues</strong>
+                    <span class="badge bg-dark rounded-pill"><%= totalIssues %></span>
+                  </li>
+                </ul>
                 
-                <% if (emails && emails.length > 0) { %>
-                  <div class="email-list">
-                    <ul class="list-group">
-                      <% emails.forEach(function(email) { %>
-                        <li class="list-group-item">
-                          <a href="mailto:<%= email %>"><%= email %></a>
-                        </li>
-                      <% }); %>
-                    </ul>
-                    
-                    <% if (stats.totalEmails > emails.length) { %>
-                      <p class="text-muted mt-2">
-                        <small>And <%= stats.totalEmails - emails.length %> more... See the full report for complete list.</small>
-                      </p>
-                    <% } %>
-                  </div>
-                <% } else { %>
-                  <p class="text-muted">No email addresses found during scan.</p>
-                <% } %>
+                <div class="mt-3">
+                  <% if (totalIssues > 0) { %>
+                    <div class="alert alert-info">
+                      <small>
+                        <strong>Critical Issues: </strong><%= ((criticalIssues / totalIssues) * 100).toFixed(1) %>% of total<br>
+                        <strong>Warning Issues: </strong><%= ((warningIssues / totalIssues) * 100).toFixed(1) %>% of total
+                      </small>
+                    </div>
+                  <% } %>
+                </div>
               </div>
               
               <div class="col-md-6">
-                <h4 class="h6">Page Statistics</h4>
-                <ul class="list-group">
-                  <li class="list-group-item d-flex justify-content-between align-items-center">
-                    Total Pages Found
-                    <span class="badge bg-primary rounded-pill"><%= stats.totalPagesFound %></span>
-                  </li>
-                  <li class="list-group-item d-flex justify-content-between align-items-center">
-                    Pages Scanned
-                    <span class="badge bg-success rounded-pill"><%= stats.totalPagesScanned %></span>
-                  </li>
-                  <li class="list-group-item d-flex justify-content-between align-items-center">
-                    Coverage
-                    <span class="badge bg-info rounded-pill"><%= Math.round((stats.totalPagesScanned / Math.max(stats.totalPagesFound, 1)) * 100) %>%</span>
-                  </li>
-                </ul>
+                <h4 class="h6">Scan Coverage</h4>
+                <div class="card bg-light">
+                  <div class="card-body py-2">
+                    <div class="d-flex justify-content-between">
+                      <span>Pages Found:</span>
+                      <strong><%= stats.totalPagesFound %></strong>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                      <span>Pages Scanned:</span>
+                      <strong><%= stats.totalPagesScanned %></strong>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                      <span>Coverage:</span>
+                      <strong><%= Math.round((stats.totalPagesScanned / Math.max(stats.totalPagesFound, 1)) * 100) %>%</strong>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                      <span>Email Addresses Found:</span>
+                      <strong><%= Array.isArray(emails) ? emails.length : 0 %></strong>
+                    </div>
+                  </div>
+                </div>
               </div>
+            </div>
+            
+            <% if (criticalIssues > 0 || warningIssues > 0) { %>
+              <div class="alert alert-warning mt-3">
+                <i class="bi bi-exclamation-triangle me-2"></i>
+                <strong>Action Required:</strong> This website has <%= criticalIssues %> critical and <%= warningIssues %> warning issues that need to be addressed for WCAG compliance.
+              </div>
+            <% } else if (totalIssues === 0) { %>
+              <div class="alert alert-success mt-3">
+                <i class="bi bi-check-circle me-2"></i>
+                <strong>Good News:</strong> No accessibility issues were detected in this scan!
+              </div>
+            <% } %>
+          </div>
+        </div>
+        
+        <!-- Contact Information Section -->
+        <div class="card mb-4">
+          <div class="card-header bg-info text-white">
+            <h3 class="h5 mb-0">Contact Information</h3>
+          </div>
+          <div class="card-body">
+            <% 
+              // Make sure emails is defined and is an array
+              const emailList = Array.isArray(emails) ? emails : [];
+            %>
+            
+            <p>Found <strong><%= emailList.length %></strong> email addresses during scan:</p>
+            
+            <% if (emailList.length > 0) { %>
+              <div class="row">
+                <% 
+                  // Display emails in columns
+                  const emailsPerColumn = Math.ceil(emailList.length / 3);
+                  let displayEmails = emailList.slice(0, 30); // Show max 30 emails
+                %>
+                
+                <% [0, 1, 2].forEach(colIndex => { %>
+                  <div class="col-md-4">
+                    <ul class="list-group list-group-flush">
+                      <% 
+                        const startIdx = colIndex * emailsPerColumn;
+                        const endIdx = Math.min(startIdx + emailsPerColumn, displayEmails.length);
+                        const colEmails = displayEmails.slice(startIdx, endIdx);
+                      %>
+                      
+                      <% colEmails.forEach(email => { %>
+                        <li class="list-group-item px-0 py-1 d-flex align-items-center">
+                          <i class="bi bi-envelope me-2 text-muted"></i>
+                          <a href="mailto:<%= email %>" class="text-truncate" title="<%= email %>"><%= email %></a>
+                        </li>
+                      <% }); %>
+                    </ul>
+                  </div>
+                <% }); %>
+              </div>
+              
+              <% if (emailList.length > 30) { %>
+                <div class="alert alert-info mt-3 mb-0">
+                  <i class="bi bi-info-circle me-2"></i>
+                  Showing 30 of <%= emailList.length %> emails. Download the full report to see all email addresses.
+                </div>
+              <% } %>
+            <% } else { %>
+              <div class="alert alert-warning">
+                <i class="bi bi-exclamation-triangle me-2"></i>
+                No email addresses were found during the scan.
+              </div>
+            <% } %>
+          </div>
+        </div>
+        
+        <!-- Detailed Results Section -->
+        <div class="card">
+          <div class="card-header bg-primary text-white">
+            <h3 class="h5 mb-0">Detailed Results by Page</h3>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-striped table-hover mb-0">
+                <thead class="table-dark">
+                  <tr>
+                    <th>Page URL</th>
+                    <th class="text-center">Critical</th>
+                    <th class="text-center">Warning</th>
+                    <th class="text-center">Info</th>
+                    <th class="text-center">Total</th>
+                    <th class="text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% results.forEach(function(result) { 
+                    let violationCounts = { total: 0, critical: 0, warning: 0, info: 0 };
+                    
+                    try {
+                      const violations = JSON.parse(result.violations || '{}');
+                      if (violations.violationCounts) {
+                        violationCounts = violations.violationCounts;
+                      }
+                    } catch (e) {
+                      // Keep default zeroes if parsing fails
+                    }
+                  %>
+                    <tr>
+                      <td class="text-truncate" style="max-width: 350px;" title="<%= result.url %>">
+                        <a href="<%= result.url %>" target="_blank" class="text-decoration-none">
+                          <%= result.url %>
+                        </a>
+                      </td>
+                      <td class="text-center <%= violationCounts.critical > 0 ? 'critical' : '' %>">
+                        <%= violationCounts.critical %>
+                      </td>
+                      <td class="text-center <%= violationCounts.warning > 0 ? 'warning' : '' %>">
+                        <%= violationCounts.warning %>
+                      </td>
+                      <td class="text-center <%= violationCounts.info > 0 ? 'info' : '' %>">
+                        <%= violationCounts.info %>
+                      </td>
+                      <td class="text-center fw-bold">
+                        <%= violationCounts.total %>
+                      </td>
+                      <td class="text-center">
+                        <% if (result.status === '404') { %>
+                          <span class="badge bg-danger">404</span>
+                        <% } else if (result.status >= 400) { %>
+                          <span class="badge bg-warning text-dark"><%= result.status %></span>
+                        <% } else if (result.status === 'completed') { %>
+                          <span class="badge bg-success">Completed</span>
+                        <% } else if (result.status === 'in_progress') { %>
+                          <span class="badge bg-info">In Progress</span>
+                        <% } else if (result.status === 'error') { %>
+                          <span class="badge bg-danger">Error</span>
+                        <% } else { %>
+                          <span class="badge bg-secondary">Unknown</span>
+                        <% } %>
+                      </td>
+                    </tr>
+                  <% }); %>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
         
-        <!-- Accessibility Issues Summary -->
-        <div class="card mb-4">
-          <div class="card-header bg-danger text-white">
-            <h3 class="h5 mb-0">Accessibility Issues</h3>
-          </div>
-          <div class="card-body">
-            <% if (results && results.length > 0) { %>
-              <div class="table-responsive">
-                <table class="table table-hover">
-                  <thead>
-                    <tr>
-                      <th>Page</th>
-                      <th>Critical Issues</th>
-                      <th>Warnings</th>
-                      <th>Info</th>
-                      <th>Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <% 
-                    let totalIssues = { total: 0, critical: 0, warning: 0, info: 0 };
-                    results.forEach(function(result) { 
-                      let counts = { total: 0, critical: 0, warning: 0, info: 0 };
-                      
-                      try {
-                        const violations = JSON.parse(result.violations);
-                        if (violations.violationCounts) {
-                          counts = violations.violationCounts;
-                        }
-                      } catch (e) {
-                        // Keep default zeroes if parsing fails
-                      }
-                      
-                      // Add to totals
-                      totalIssues.total += counts.total;
-                      totalIssues.critical += counts.critical;
-                      totalIssues.warning += counts.warning;
-                      totalIssues.info += counts.info;
-                    %>
-                      <tr>
-                        <td>
-                          <a href="<%= result.url %>" target="_blank" title="<%= result.url %>">
-                            <%= result.url.length > 50 ? result.url.substring(0, 47) + '...' : result.url %>
-                          </a>
-                        </td>
-                        <td class="<%= counts.critical > 0 ? 'text-danger' : '' %>">
-                          <%= counts.critical %>
-                        </td>
-                        <td class="<%= counts.warning > 0 ? 'text-warning' : '' %>">
-                          <%= counts.warning %>
-                        </td>
-                        <td><%= counts.info %></td>
-                        <td><strong><%= counts.total %></strong></td>
-                      </tr>
-                    <% }); %>
-                  </tbody>
-                  <tfoot>
-                    <tr class="table-active">
-                      <th>TOTAL</th>
-                      <th class="<%= totalIssues.critical > 0 ? 'text-danger' : '' %>">
-                        <%= totalIssues.critical %>
-                      </th>
-                      <th class="<%= totalIssues.warning > 0 ? 'text-warning' : '' %>">
-                        <%= totalIssues.warning %>
-                      </th>
-                      <th><%= totalIssues.info %></th>
-                      <th><%= totalIssues.total %></th>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            <% } else { %>
-              <div class="alert alert-warning">
-                No scan results available yet. This could be because the scan is still in progress or there was an error.
-              </div>
-            <% } %>
-            
-            <div class="mt-3">
-              <p class="mb-0">
-                <small class="text-muted">For detailed information about each issue and how to fix it, please download the full report.</small>
-              </p>
-            </div>
-          </div>
-        </div>
       <% } else { %>
         <div class="alert alert-danger">
           <h2 class="h4">Scan Not Found</h2>
@@ -172,7 +264,7 @@
         </div>
       <% } %>
       
-      <div class="text-center mb-4">
+      <div class="text-center my-4">
         <a href="/scan" class="btn btn-primary me-2">
           <i class="bi bi-search me-1"></i> Start a New Scan
         </a>
