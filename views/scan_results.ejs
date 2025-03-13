@@ -1,0 +1,187 @@
+<%- include('partials/header') %>
+
+<div class="container mt-4">
+  <div class="row">
+    <div class="col-12">
+      <h1 class="display-5 mb-4">Scan Results</h1>
+      
+      <% if (scan) { %>
+        <div class="alert alert-<%= scan.status === 'completed' ? 'success' : (scan.status === 'in_progress' ? 'info' : 'warning') %>">
+          <h2 class="h4">Scan Status: <%= scan.status.charAt(0).toUpperCase() + scan.status.slice(1) %></h2>
+          <p>URL: <a href="<%= scan.url %>" target="_blank"><%= scan.url %></a></p>
+          <p>Scanned on: <%= new Date(scan.scanned_at).toLocaleString() %></p>
+          
+          <% if (scan.error_message) { %>
+            <p class="text-danger">Error: <%= scan.error_message %></p>
+          <% } %>
+          
+          <% if (scan.status === 'completed') { %>
+            <div class="mt-2">
+              <a href="/reports/<%= scan.report_pdf %>" class="btn btn-primary btn-sm me-2" target="_blank">
+                <i class="bi bi-file-pdf me-1"></i> Download PDF Report
+              </a>
+              <a href="/reports/<%= scan.report_csv %>" class="btn btn-success btn-sm" target="_blank">
+                <i class="bi bi-file-excel me-1"></i> Download CSV Data
+              </a>
+            </div>
+          <% } %>
+        </div>
+        
+        <!-- Contact Information and Page Statistics -->
+        <div class="card mb-4">
+          <div class="card-header bg-info text-white">
+            <h3 class="h5 mb-0">Contact Information & Statistics</h3>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="col-md-6">
+                <h4 class="h6">Email Addresses</h4>
+                <p>Found <strong><%= stats.totalEmails %></strong> unique email addresses during scan.</p>
+                
+                <% if (emails && emails.length > 0) { %>
+                  <div class="email-list">
+                    <ul class="list-group">
+                      <% emails.forEach(function(email) { %>
+                        <li class="list-group-item">
+                          <a href="mailto:<%= email %>"><%= email %></a>
+                        </li>
+                      <% }); %>
+                    </ul>
+                    
+                    <% if (stats.totalEmails > emails.length) { %>
+                      <p class="text-muted mt-2">
+                        <small>And <%= stats.totalEmails - emails.length %> more... See the full report for complete list.</small>
+                      </p>
+                    <% } %>
+                  </div>
+                <% } else { %>
+                  <p class="text-muted">No email addresses found during scan.</p>
+                <% } %>
+              </div>
+              
+              <div class="col-md-6">
+                <h4 class="h6">Page Statistics</h4>
+                <ul class="list-group">
+                  <li class="list-group-item d-flex justify-content-between align-items-center">
+                    Total Pages Found
+                    <span class="badge bg-primary rounded-pill"><%= stats.totalPagesFound %></span>
+                  </li>
+                  <li class="list-group-item d-flex justify-content-between align-items-center">
+                    Pages Scanned
+                    <span class="badge bg-success rounded-pill"><%= stats.totalPagesScanned %></span>
+                  </li>
+                  <li class="list-group-item d-flex justify-content-between align-items-center">
+                    Coverage
+                    <span class="badge bg-info rounded-pill"><%= Math.round((stats.totalPagesScanned / Math.max(stats.totalPagesFound, 1)) * 100) %>%</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Accessibility Issues Summary -->
+        <div class="card mb-4">
+          <div class="card-header bg-danger text-white">
+            <h3 class="h5 mb-0">Accessibility Issues</h3>
+          </div>
+          <div class="card-body">
+            <% if (results && results.length > 0) { %>
+              <div class="table-responsive">
+                <table class="table table-hover">
+                  <thead>
+                    <tr>
+                      <th>Page</th>
+                      <th>Critical Issues</th>
+                      <th>Warnings</th>
+                      <th>Info</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <% 
+                    let totalIssues = { total: 0, critical: 0, warning: 0, info: 0 };
+                    results.forEach(function(result) { 
+                      let counts = { total: 0, critical: 0, warning: 0, info: 0 };
+                      
+                      try {
+                        const violations = JSON.parse(result.violations);
+                        if (violations.violationCounts) {
+                          counts = violations.violationCounts;
+                        }
+                      } catch (e) {
+                        // Keep default zeroes if parsing fails
+                      }
+                      
+                      // Add to totals
+                      totalIssues.total += counts.total;
+                      totalIssues.critical += counts.critical;
+                      totalIssues.warning += counts.warning;
+                      totalIssues.info += counts.info;
+                    %>
+                      <tr>
+                        <td>
+                          <a href="<%= result.url %>" target="_blank" title="<%= result.url %>">
+                            <%= result.url.length > 50 ? result.url.substring(0, 47) + '...' : result.url %>
+                          </a>
+                        </td>
+                        <td class="<%= counts.critical > 0 ? 'text-danger' : '' %>">
+                          <%= counts.critical %>
+                        </td>
+                        <td class="<%= counts.warning > 0 ? 'text-warning' : '' %>">
+                          <%= counts.warning %>
+                        </td>
+                        <td><%= counts.info %></td>
+                        <td><strong><%= counts.total %></strong></td>
+                      </tr>
+                    <% }); %>
+                  </tbody>
+                  <tfoot>
+                    <tr class="table-active">
+                      <th>TOTAL</th>
+                      <th class="<%= totalIssues.critical > 0 ? 'text-danger' : '' %>">
+                        <%= totalIssues.critical %>
+                      </th>
+                      <th class="<%= totalIssues.warning > 0 ? 'text-warning' : '' %>">
+                        <%= totalIssues.warning %>
+                      </th>
+                      <th><%= totalIssues.info %></th>
+                      <th><%= totalIssues.total %></th>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            <% } else { %>
+              <div class="alert alert-warning">
+                No scan results available yet. This could be because the scan is still in progress or there was an error.
+              </div>
+            <% } %>
+            
+            <div class="mt-3">
+              <p class="mb-0">
+                <small class="text-muted">For detailed information about each issue and how to fix it, please download the full report.</small>
+              </p>
+            </div>
+          </div>
+        </div>
+      <% } else { %>
+        <div class="alert alert-danger">
+          <h2 class="h4">Scan Not Found</h2>
+          <p>The requested scan could not be found. It may have been deleted or never existed.</p>
+          <a href="/scan" class="btn btn-primary">Start a New Scan</a>
+        </div>
+      <% } %>
+      
+      <div class="text-center mb-4">
+        <a href="/scan" class="btn btn-primary me-2">
+          <i class="bi bi-search me-1"></i> Start a New Scan
+        </a>
+        <a href="/queue" class="btn btn-secondary">
+          <i class="bi bi-list-check me-1"></i> View Scan Queue
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%- include('partials/footer') %>

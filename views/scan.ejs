@@ -1,0 +1,119 @@
+<%- include('partials/header') %>
+
+<div class="container mt-4">
+  <div class="row">
+    <div class="col-lg-8 offset-lg-2">
+      <h1 class="display-5 mb-4">Accessibility Scanner</h1>
+      
+      <div class="alert alert-info">
+        <p class="mb-0">Enter a website URL to scan for accessibility issues. The scanner will check for WCAG 2.1 compliance.</p>
+      </div>
+      
+      <div class="card mb-4">
+        <div class="card-header bg-primary text-white">
+          <h2 class="h5 mb-0">Start New Accessibility Scan</h2>
+        </div>
+        <div class="card-body">
+          <form id="scanForm" action="/scan/submit" method="POST">
+            <div class="mb-3">
+              <label for="url" class="form-label">Website URL to Scan</label>
+              <div class="input-group">
+                <span class="input-group-text"><i class="bi bi-globe"></i></span>
+                <input type="url" class="form-control" id="url" name="url" placeholder="https://example.com" required>
+              </div>
+              <div class="form-text">Enter the full URL including https://</div>
+            </div>
+            
+            <!-- Scan Type Selection -->
+            <div class="mb-3">
+              <label class="form-label d-block">Scan Type</label>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="scanType" id="standardScan" value="standard" checked>
+                <label class="form-check-label" for="standardScan">Standard Scan (up to 100 pages)</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="scanType" id="deepScan" value="deep">
+                <label class="form-check-label" for="deepScan">Deep Scan</label>
+              </div>
+            </div>
+            
+            <!-- Max Pages for Deep Scan -->
+            <div class="mb-3" id="maxPagesContainer" style="display: none;">
+              <label for="maxPages" class="form-label">Maximum Pages to Scan</label>
+              <input type="number" class="form-control" id="maxPages" name="maxPages" value="250" min="100" max="1000">
+              <div class="form-text">Enter a number between 100 and 1000</div>
+            </div>
+            
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-search me-2"></i>Start Scan
+            </button>
+          </form>
+        </div>
+      </div>
+      
+      <div class="card mb-4">
+        <div class="card-header bg-secondary text-white">
+          <h2 class="h5 mb-0">How It Works</h2>
+        </div>
+        <div class="card-body">
+          <ol class="mb-0">
+            <li>Enter the URL of the website you want to scan.</li>
+            <li>Choose between a standard scan (up to 100 pages) or a deep scan (up to 1000 pages).</li>
+            <li>Submit the form to add the website to the scan queue.</li>
+            <li>Your scan will be processed automatically.</li>
+            <li>Once completed, you'll receive a detailed accessibility report with:
+              <ul>
+                <li>WCAG compliance violations</li>
+                <li>Email addresses found on the website</li>
+                <li>Detailed recommendations for fixing issues</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add this script at the end of your page -->
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const scanTypeRadios = document.querySelectorAll('input[name="scanType"]');
+    const maxPagesContainer = document.getElementById('maxPagesContainer');
+    
+    // Toggle max pages input visibility based on scan type
+    scanTypeRadios.forEach(radio => {
+      radio.addEventListener('change', function() {
+        if (this.value === 'deep') {
+          maxPagesContainer.style.display = 'block';
+        } else {
+          maxPagesContainer.style.display = 'none';
+        }
+      });
+    });
+    
+    // Form submission validation
+    document.getElementById('scanForm').addEventListener('submit', function(e) {
+      const url = document.getElementById('url').value.trim();
+      
+      // Basic URL validation
+      if (!url.match(/^https?:\/\//i)) {
+        e.preventDefault();
+        alert('Please enter a valid URL starting with http:// or https://');
+        return;
+      }
+      
+      // Validate max pages for deep scan
+      if (document.getElementById('deepScan').checked) {
+        const maxPages = parseInt(document.getElementById('maxPages').value);
+        if (isNaN(maxPages) || maxPages < 100 || maxPages > 1000) {
+          e.preventDefault();
+          alert('Please enter a valid number of pages between 100 and 1000');
+          return;
+        }
+      }
+    });
+  });
+</script>
+
+<%- include('partials/footer') %>

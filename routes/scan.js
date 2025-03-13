@@ -1,90 +1,159 @@
 const express = require('express');
 const router = express.Router();
-const { chromium } = require('playwright');
-const { runAsync } = require('../db/db');
-const { crawlAndTest } = require('../services/scanner');
-const { generatePDF, generateCSV } = require('../services/reportGenerator');
-const { sanitizeUrlForFilename, generateScanId } = require('../utils/helpers');
+const { runAsync, getAsync, allAsync } = require('../db/db');
 const logger = require('../utils/logger');
-const { PLAYWRIGHT_TIMEOUT, PLAYWRIGHT_ARGS, DEFAULT_MAX_PAGES } = require('../config/config');
+const { shouldAllowUrl } = require('../utils/urlFilter');
+const { getEmailsForScan } = require('../services/reportGenerator');
+const { safeJsonParse } = require('../services/reportGenerator');
 
-// Handle WCAG test submission (single URL or queue multiple URLs)
-router.post('/test', async (req, res) => {
-  const { url, maxPages = DEFAULT_MAX_PAGES, queue = false } = req.body;
-  const pagesToScan = parseInt(maxPages) || DEFAULT_MAX_PAGES; // Default if not provided or invalid
+// Render the scan form 
+router.get('/', (req, res) => {
+  res.render('scan', {
+    title: 'Accessibility Scan',
+    active: 'scan'
+  });
+});
 
-  if (!url) {
-    return res.status(400).json({ error: 'URL is required' });
-  }
-
+// Process scan form submission
+router.post('/submit', async (req, res) => {
   try {
-    if (queue) {
-      // Add URL to the scanning queue with maxPages
-      await runAsync(
-        'INSERT OR REPLACE INTO queue (url, max_pages) VALUES (?, ?)', 
-        [url, pagesToScan]
-      );
-      
-      logger.info(`URL ${url} with maxPages ${pagesToScan} added to scanning queue`);
-      return res.json({ message: 'URL queued for scanning', scanId: null });
-    } else {
-      // Process single URL immediately
-      logger.info(`Starting scan for URL: ${url} with maxPages: ${pagesToScan}`);
-      
-      const browser = await chromium.launch({
-        headless: true,
-        timeout: PLAYWRIGHT_TIMEOUT,
-        args: PLAYWRIGHT_ARGS,
-      });
-      
-      const scanId = generateScanId();
-      
-      // Start crawling and testing in the background
-      crawlAndTest(url, browser, pagesToScan, 1, (progress) => {
-        logger.info(`Scan progress for ${scanId}: ${progress} pages scanned`);
-      }, scanId, 5).then(async () => {
-        // Close browser after scanning
-        await browser.close();
-        
-        // Auto-generate PDF and CSV reports
-        logger.info(`Scan completed, generating reports for scan ${scanId}`);
-        const pdfPath = await generatePDF(scanId, url);
-        const csvPath = await generateCSV(scanId, url);
-        
-        // Update scan_results with completion status and report paths
-        await runAsync(
-          'UPDATE scan_results SET status = ?, report_pdf = ?, report_csv = ? WHERE scan_id = ?',
-          ['completed', pdfPath, csvPath, scanId]
-        );
-        
-        logger.info(`Reports generated for scan ${scanId}`);
-      }).catch(async (error) => {
-        logger.error(`Scan failed: ${error.stack}`);
-        
-        // Update scan_results with error status
-        await runAsync(
-          'UPDATE scan_results SET status = ? WHERE scan_id = ?',
-          ['failed', scanId]
-        );
-        
-        try {
-          await browser.close();
-        } catch (e) {
-          // Ignore browser close errors
-        }
-      });
-      
-      // Return scan ID immediately so client can monitor progress
-      const sanitizedUrl = sanitizeUrlForFilename(url);
-      res.json({ 
-        scanId, 
-        message: 'Scan started successfully', 
-        resultsUrl: `/results/${scanId}`
+    const { url, scanType, maxPages } = req.body;
+    
+    // Validate URL
+    if (!url || typeof url !== 'string') {
+      return res.status(400).render('error', {
+        title: 'Invalid URL',
+        message: 'Please provide a valid URL to scan',
+        error: { status: 400 }
       });
     }
+    
+    // Basic URL format validation
+    if (!url.match(/^https?:\/\//i)) {
+      return res.status(400).render('error', {
+        title: 'Invalid URL Format',
+        message: 'Please ensure your URL starts with http:// or https://',
+        error: { status: 400 }
+      });
+    }
+    
+    // Check if URL is allowed by the filter
+    if (!shouldAllowUrl(url)) {
+      return res.status(400).render('error', {
+        title: 'URL Not Allowed',
+        message: 'This URL cannot be scanned. Please ensure it is a valid public website.',
+        error: { status: 400 }
+      });
+    }
+    
+    // Determine max pages based on scan type
+    let pagesToScan = 100; // Default for standard scan
+    
+    if (scanType === 'deep') {
+      // Parse and validate max pages for deep scan
+      const parsedMaxPages = parseInt(maxPages, 10);
+      if (!isNaN(parsedMaxPages) && parsedMaxPages >= 100 && parsedMaxPages <= 1000) {
+        pagesToScan = parsedMaxPages;
+      } else {
+        return res.status(400).render('error', {
+          title: 'Invalid Configuration',
+          message: 'Please specify a valid number of pages between 100 and 1000 for a deep scan',
+          error: { status: 400 }
+        });
+      }
+    }
+    
+    // Add the URL to the scan queue with the specified max pages
+    await runAsync('INSERT INTO queue (url, max_pages, added_at) VALUES (?, ?, CURRENT_TIMESTAMP)', 
+      [url, pagesToScan]
+    );
+    
+    // Redirect to the queue page
+    return res.redirect('/queue?message=Scan+added+to+queue&scan_type=' + 
+      (scanType === 'deep' ? 'deep' : 'standard') + 
+      '&max_pages=' + pagesToScan);
+    
   } catch (error) {
-    logger.error(`Error handling scan request: ${error.stack}`);
-    res.status(500).json({ error: error.message });
+    logger.error(`Error processing scan request: ${error.message}`);
+    
+    return res.status(500).render('error', {
+      title: 'Server Error',
+      message: 'An error occurred while processing your request',
+      error: { status: 500 }
+    });
+  }
+});
+
+// Get scan results 
+router.get('/results/:scanId', async (req, res) => {
+  try {
+    const { scanId } = req.params;
+    
+    // Get scan information
+    const scanInfo = await getAsync(
+      `SELECT url, status, error_message, scanned_at, report_pdf, report_csv
+       FROM scan_results 
+       WHERE scan_id = ? 
+       ORDER BY scanned_at DESC LIMIT 1`,
+      [scanId]
+    );
+    
+    if (!scanInfo) {
+      return res.status(404).render('error', {
+        title: 'Scan Not Found',
+        message: 'The requested scan could not be found',
+        error: { status: 404 }
+      });
+    }
+    
+    // Get scan results with violations
+    const results = await allAsync(
+      'SELECT url, violations, links, status FROM scan_results WHERE scan_id = ? ORDER BY scanned_at',
+      [scanId]
+    );
+    
+    // Get emails for this scan
+    const emails = await getEmailsForScan(scanId);
+    
+    // Get total pages scanned and found statistics
+    const totalPagesScanned = results.length;
+    let allFoundUrls = new Set();
+    
+    results.forEach(row => {
+      allFoundUrls.add(row.url);
+      const links = safeJsonParse(row.links, []);
+      links.forEach(link => {
+        if (link && typeof link === 'string') {
+          allFoundUrls.add(link);
+        }
+      });
+    });
+    
+    const totalPagesFound = allFoundUrls.size;
+    
+    // Render the scan results page
+    res.render('scan_results', {
+      title: 'Scan Results',
+      scan: scanInfo,
+      results: results,
+      scanId,
+      stats: {
+        totalPagesScanned,
+        totalPagesFound,
+        totalEmails: emails.length
+      },
+      emails: emails.slice(0, 50), // Show first 50 emails max on the page
+      active: 'scan'
+    });
+    
+  } catch (error) {
+    logger.error(`Error retrieving scan results: ${error.message}`);
+    
+    return res.status(500).render('error', {
+      title: 'Server Error',
+      message: 'An error occurred while retrieving scan results',
+      error: { status: 500 }
+    });
   }
 });
 

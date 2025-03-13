@@ -1,19 +1,19 @@
 const imaplib = require('imap');
 const { simpleParser } = require('mailparser');
 const nodemailer = require('nodemailer');
-const { runAsync } = require('../db/db');
+const { getAsync, allAsync, runAsync } = require('../db/db');
 const logger = require('../utils/logger');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
+// Flag to control email sending
+const emailEnabled = process.env.EMAIL_ENABLED !== 'false';
 
 // Track connection attempts to implement backoff strategy
 let connectionAttempts = 0;
 let lastConnectionTime = 0;
 const MAX_RETRIES = 3;
 const BACKOFF_TIME = 15 * 60 * 1000; // 15 minutes in milliseconds
-
-// Default max pages for email scans - configurable via environment variable
-const EMAIL_MAX_PAGES = parseInt(process.env.EMAIL_MAX_PAGES || '10', 10);
 
 /**
  * Create IMAP client with current configuration
@@ -50,12 +50,61 @@ const smtpClient = nodemailer.createTransport({
 });
 
 /**
- * Filter for URLs to prevent scanning local report URLs and breaking recursive loops
+ * Clean a URL - remove problematic patterns
+ * @param {string} url - URL to clean
+ * @returns {string} Cleaned URL
+ */
+function cleanUrl(url) {
+  try {
+    let cleaned = url.trim();
+    
+    // Add protocol if missing
+    if (!cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
+      cleaned = `https://${cleaned}`;
+    }
+    
+    // Remove trailing periods or .The
+    while (cleaned.endsWith('.') || cleaned.endsWith('.The')) {
+      if (cleaned.endsWith('.The')) {
+        cleaned = cleaned.slice(0, -4);
+      } else if (cleaned.endsWith('.')) {
+        cleaned = cleaned.slice(0, -1);
+      }
+    }
+    
+    // Replace consecutive periods with a single one
+    cleaned = cleaned.replace(/\.+/g, '.');
+    
+    // Try to construct a proper URL
+    const urlObj = new URL(cleaned);
+    
+    // Return the normalized URL
+    return urlObj.toString();
+  } catch (error) {
+    // If cleaning fails, return the original
+    logger.debug(`Failed to clean URL: ${url} - ${error.message}`);
+    return url;
+  }
+}
+
+/**
+ * Filter for URLs to prevent problematic patterns and infinite loops
  * @param {string} url - URL to check
  * @returns {boolean} - True if URL should be allowed, false if it should be filtered out
  */
 function shouldAllowUrl(url) {
   try {
+    // Check if URL contains obvious problems
+    if (!url || typeof url !== 'string') {
+      return false;
+    }
+    
+    // Check for URLs ending with periods or .The which cause loops
+    if (url.endsWith('.') || url.endsWith('.The') || url.includes('..')) {
+      logger.debug(`🚫 URL rejected - contains trailing periods: ${url}`);
+      return false;
+    }
+    
     // Check if it's a local report URL
     if (url.includes('/reports/') || url.includes('localhost')) {
       return false;
@@ -82,10 +131,19 @@ function shouldAllowUrl(url) {
       }
     }
     
+    // Try to parse as a valid URL
+    try {
+      new URL(url);
+    } catch (e) {
+      logger.debug(`🚫 URL rejected - invalid format: ${url}`);
+      return false;
+    }
+    
     // Otherwise, let the URL through
     return true;
   } catch (error) {
     // If we can't parse the URL, better to filter it out
+    logger.debug(`🚫 URL rejected due to error: ${url} - ${error.message}`);
     return false;
   }
 }
@@ -104,7 +162,8 @@ function extractUrls(text) {
     .map(url => {
       const cleaned = url.replace(/['"<>\n]/g, '').trim();
       logger.debug(`🔍 URL Cleaning: Raw: ${url}, Cleaned: ${cleaned}`);
-      return cleaned;
+      // Apply the cleaning function to fix problematic URLs
+      return cleanUrl(cleaned);
     })
     .filter(url => {
       try {
@@ -120,84 +179,85 @@ function extractUrls(text) {
         return false;
       }
     });
-  logger.debug(`📡 Final Extracted URLs: ${JSON.stringify(processedUrls)}`);
-  return processedUrls;
+  
+  // Remove duplicates
+  const uniqueUrls = [...new Set(processedUrls)];
+  
+  logger.debug(`📡 Final Extracted URLs: ${JSON.stringify(uniqueUrls)}`);
+  return uniqueUrls;
 }
 
 /**
- * Send email reply
- * @param {string} to - Recipient email
- * @param {string} originalSubject - Original email subject
- * @param {string} message - Reply message
+ * Send email reply (now disabled by default)
  */
 async function sendEmailReply(to, originalSubject, message) {
-  try {
-    const subject = originalSubject.toLowerCase().startsWith('re:') 
-      ? originalSubject 
-      : `Re: ${originalSubject}`;
-    
-    await smtpClient.sendMail({
-      from: process.env.EMAIL_FROM,
-      to: to,
-      replyTo: process.env.EMAIL_REPLY_TO,
-      subject: subject,
-      text: message,
-      html: message.replace(/\n/g, '<br>')
-    });
-    
-    logger.info(`✉️ Reply sent to ${to}`);
-  } catch (error) {
-    logger.error(`❌ Error sending email reply: ${error.message}`);
-  }
+  // Skip sending emails
+  logger.info(`Email replies disabled - would have sent to ${to}`);
+  return true;
 }
 
 /**
  * Add URL to scanner queue
  * @param {string} url - URL to scan
  * @param {string} requester - Email of the requester
- * @param {number} [maxPages=100] - Maximum pages to scan
+ * @param {number} [maxPages=10] - Maximum pages to scan - reduced to 10 for emails
  * @returns {string|null} Scan ID or null if URL was rejected
  */
-async function addUrlToQueue(url, requester, maxPages = 100) {
+async function addUrlToQueue(url, requester, maxPages = 10) {
   try {
-    // Clean the URL
-    let cleanUrl = url.trim();
+    // Clean the URL first
+    let cleanedUrl = cleanUrl(url);
     
-    // Add protocol if missing
-    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
-      cleanUrl = `https://${cleanUrl}`;
-    }
-    
-    // Validate URL
-    if (!shouldAllowUrl(cleanUrl)) {
-      logger.warn(`🚫 URL rejected by filter: ${cleanUrl}`);
+    // Apply validation
+    if (!shouldAllowUrl(cleanedUrl)) {
+      logger.warn(`🚫 URL rejected by filter: ${cleanedUrl} (original: ${url})`);
       return null;
     }
     
+    // Additional check - see if this URL has already been scanned recently
+    try {
+      const recentScans = await allAsync(`
+        SELECT url FROM scan_results 
+        WHERE url = ? AND status = 'completed' 
+        AND scanned_at > datetime('now', '-1 day')
+        LIMIT 1
+      `, [cleanedUrl]);
+      
+      if (recentScans && recentScans.length > 0) {
+        logger.info(`📋 URL ${cleanedUrl} was already scanned in the last 24 hours. Not adding to queue.`);
+        // Return a scan ID anyway
+        return Date.now().toString() + Math.random().toString(36).substring(2, 7);
+      }
+    } catch (checkError) {
+      logger.error(`Error checking recent scans: ${checkError.message}`);
+      // Continue even if this check fails
+    }
+    
     const scanId = Date.now().toString() + Math.random().toString(36).substring(2, 7);
-    logger.debug(`🔗 Queueing URL: ${cleanUrl} (original: ${url})`);
+    logger.debug(`🔗 Queueing URL: ${cleanedUrl} (original: ${url})`);
     
     // Check if this URL is already in the queue
     const existingQueue = await runAsync(
       'SELECT COUNT(*) as count FROM queue WHERE url = ?', 
-      [cleanUrl]
+      [cleanedUrl]
     );
     
     // Only add to queue if not already present
     if (existingQueue && existingQueue.count && existingQueue.count > 0) {
-      logger.info(`🔄 URL ${cleanUrl} already in queue, not adding duplicate`);
+      logger.info(`🔄 URL ${cleanedUrl} already in queue, not adding duplicate`);
     } else {
-      await runAsync('INSERT INTO queue (url, max_pages) VALUES (?, ?)', [cleanUrl, maxPages]);
-      logger.info(`🔗 URL ${cleanUrl} added to queue with max pages: ${maxPages}`);
+      // Note the max_pages is now set to 10 by default for email
+      await runAsync('INSERT INTO queue (url, max_pages) VALUES (?, ?)', [cleanedUrl, maxPages]);
+      logger.info(`🔗 URL ${cleanedUrl} added to queue with maxPages=${maxPages}`);
     }
     
     // Add to scan_email_requests table
     await runAsync(
       'INSERT INTO scan_email_requests (scan_id, url, requester_email) VALUES (?, ?, ?)',
-      [scanId, cleanUrl, requester]
+      [scanId, cleanedUrl, requester]
     );
     
-    logger.info(`🔗 Created scan request with ID ${scanId} for URL ${cleanUrl}`);
+    logger.info(`🔗 Created scan request with ID ${scanId} for URL ${cleanedUrl}`);
     return scanId;
   } catch (error) {
     logger.error(`❌ Error adding URL to queue: ${error.message}`);
@@ -307,11 +367,7 @@ async function checkEmails() {
                     });
                   } else {
                     logger.info(`📭 No valid URLs found in email from ${sender}`);
-                    await sendEmailReply(
-                      sender, 
-                      subject, 
-                      'No valid URLs were found in your email. Please include a full URL (starting with http:// or https://) to scan.'
-                    );
+                    // No email reply
                   }
                 } catch (processError) {
                   logger.error(`❌ Error processing email: ${processError.message}`);
@@ -382,49 +438,18 @@ async function processEmailRequests() {
     for (const request of scanRequests) {
       try {
         logger.info(`🔗 Processing scan request for URL: ${request.url}`);
+        const scanId = await addUrlToQueue(request.url, request.requester);
         
-        // Explicitly use EMAIL_MAX_PAGES for all email scan requests
-        const scanId = await addUrlToQueue(request.url, request.requester, EMAIL_MAX_PAGES);
-        
-        // Only send a confirmation email if the URL was accepted
         if (scanId) {
-          await sendEmailReply(
-            request.requester, 
-            request.subject, 
-            `Your scan request for ${request.url} has been received and added to our queue.
-
-We'll email you when the scan is complete with a link to download your accessibility report.
-
-Scan ID: ${scanId}
-Page limit: ${EMAIL_MAX_PAGES} pages
-
-Thank you for using our WCAG Accessibility Scanner.`
-          );
-          logger.info(`✅ Successfully processed scan request for ${request.url} with ${EMAIL_MAX_PAGES} page limit`);
+          // No email response - just log success
+          logger.info(`✅ Successfully processed scan request for ${request.url}`);
         } else {
-          // URL was filtered out
-          await sendEmailReply(
-            request.requester, 
-            request.subject, 
-            `We could not process your scan request for ${request.url}.
-
-The URL appears to be invalid or doesn't meet our scanning criteria. Please make sure you're submitting a valid website URL (not a PDF, image, or other file).
-
-Please try again with a different URL or contact support if you believe this is an error.`
-          );
+          // URL was filtered out - no email response
           logger.info(`🚫 Rejected scan request for filtered URL: ${request.url}`);
         }
       } catch (requestError) {
         logger.error(`❌ Error processing scan request for ${request.url}: ${requestError.message}`);
-        await sendEmailReply(
-          request.requester, 
-          request.subject, 
-          `There was a problem processing your scan request for ${request.url}.
-
-Error: ${requestError.message}
-
-Please try again or contact support if this persists.`
-        );
+        // No email response on error
       }
     }
     logger.debug('✅ Email request processing completed');
@@ -442,7 +467,6 @@ function startEmailProcessor() {
   return new Promise((resolve, reject) => {
     try {
       logger.info('🚀 EMAIL PROCESSOR: Initiating startup process');
-      logger.info(`🔢 Using ${EMAIL_MAX_PAGES} page limit for email scan requests`);
       
       // Initial run is optional based on environment variable
       if (process.env.EMAIL_CHECK_ON_STARTUP !== 'false') {
@@ -471,6 +495,5 @@ function startEmailProcessor() {
   });
 }
 
-// Debug export
-logger.debug('📦 Exporting from emailProcessor:', { startEmailProcessor });
+// Export the function
 module.exports = { startEmailProcessor };

@@ -7,11 +7,11 @@ const path = require('path');
 const { getAsync, allAsync, runAsync } = require('../db/db');
 const logger = require('../utils/logger');
 
-// Flag to control whether to attempt R2 uploads
-const USE_R2_STORAGE = process.env.USE_R2_STORAGE !== 'false';
+// Flag to control whether to attempt R2 uploads - set to false to disable
+const USE_R2_STORAGE = false;
 const BASE_URL = process.env.SCANNER_BASE_URL || 'http://localhost:3000';
 
-// Initialize R2 client only if enabled
+// Initialize R2 client only if enabled (but we've disabled it)
 let r2Client = null;
 if (USE_R2_STORAGE) {
   try {
@@ -73,166 +73,20 @@ function getLocalFileUrl(filePath) {
 }
 
 /**
- * Upload report file to R2 with fallback to local URLs
+ * Get file URL without trying to upload to R2
  */
 async function uploadReportToR2(filePath, scanId, fileType) {
-  // First check if the file exists
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`File not found: ${filePath}`);
-  }
-  
-  // If R2 is disabled or not initialized, use local URLs
-  if (!USE_R2_STORAGE || !r2Client) {
-    logger.info(`R2 storage disabled or unavailable. Using local URL for ${fileType} report.`);
-    return getLocalFileUrl(filePath);
-  }
-  
-  try {
-    const fileContent = fs.readFileSync(filePath);
-    const fileName = path.basename(filePath);
-    const key = `reports/${scanId}/${fileName}`;
-    
-    // Determine content type
-    const contentType = fileType === 'pdf' ? 'application/pdf' : 'text/csv';
-    
-    // Upload to R2
-    await r2Client.send(new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: key,
-      Body: fileContent,
-      ContentType: contentType
-    }));
-    
-    // Generate signed URL
-    const signedUrl = await getSignedUrl(
-      r2Client,
-      new GetObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: key
-      }),
-      { expiresIn: 60 * 60 * 24 * 7 } // 7 days
-    );
-    
-    logger.info(`Successfully uploaded ${fileType} report to R2: ${key}`);
-    return signedUrl;
-  } catch (error) {
-    logger.error(`Error uploading report to R2: ${error.message}`);
-    logger.info(`Falling back to local URL for ${fileType} report.`);
-    return getLocalFileUrl(filePath);
-  }
+  // Simply return the local URL without trying to upload
+  return getLocalFileUrl(filePath);
 }
 
 /**
- * Send results email
+ * Send results email (now disabled by default)
  */
 async function sendResultsEmail(to, url, scanId, reportUrls) {
-  try {
-    // Get scan summary
-    const summary = await getScanSummary(scanId);
-    
-    // Extract hostname from URL
-    let hostname;
-    try {
-      hostname = new URL(url).hostname;
-    } catch (error) {
-      logger.warn(`Could not parse URL ${url}, using as-is for email subject`);
-      hostname = url;
-    }
-    
-    // Email template
-    const htmlEmail = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="text-align: center; margin-bottom: 20px;">
-          <img src="https://a11yscan.xyz/images/a11yscan-logo.svg" alt="A11yscan Logo" width="180" height="50" style="display: inline-block;">
-        </div>
-        
-        <h1 style="color: #4f46e5; margin-bottom: 20px;">Your Accessibility Report is Ready</h1>
-        
-        <p>Hello,</p>
-        
-        <p>Good news! We've completed the accessibility scan for your website.</p>
-        
-        <div style="background-color: #f3f4f6; padding: 15px; border-radius: 5px; margin: 20px 0;">
-          <p style="margin: 0;"><strong>Website URL:</strong> ${url}</p>
-          <p style="margin: 10px 0 0;"><strong>Scan ID:</strong> ${scanId}</p>
-        </div>
-        
-        <h2 style="color: #4f46e5; margin: 25px 0 15px;">Summary of Findings</h2>
-        
-        <div style="margin-bottom: 20px;">
-          <p><strong>Pages Scanned:</strong> ${summary.pagesScanned}</p>
-          <p><strong>Total Issues Found:</strong> ${summary.totalIssues}</p>
-          <ul>
-            <li><strong style="color: #ef4444;">Critical Issues:</strong> ${summary.criticalIssues}</li>
-            <li><strong style="color: #f59e0b;">Warning Issues:</strong> ${summary.warningIssues}</li>
-            <li><strong style="color: #3b82f6;">Info Issues:</strong> ${summary.infoIssues}</li>
-          </ul>
-        </div>
-        
-        <div style="text-align: center; margin: 30px 0;">
-          <p><a href="${reportUrls.pdfUrl}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block; margin-bottom: 10px;">Download PDF Report</a></p>
-          
-          <p><a href="${reportUrls.csvUrl}" style="background-color: #6b7280; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">Download CSV Data</a></p>
-        </div>
-        
-        <p>Thank you for making the web more accessible for everyone!</p>
-        
-        <p>Best regards,<br>The A11yscan Team</p>
-        
-        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #6b7280; text-align: center;">
-          <p>© ${new Date().getFullYear()} A11yscan. All rights reserved.</p>
-        </div>
-      </div>
-    `;
-    
-    // Text version
-    const textEmail = `
-Your Accessibility Report is Ready
-
-Hello,
-
-Good news! We've completed the accessibility scan for your website.
-
-Website URL: ${url}
-Scan ID: ${scanId}
-
-Summary of Findings:
-- Pages Scanned: ${summary.pagesScanned}
-- Total Issues Found: ${summary.totalIssues}
-- Critical Issues: ${summary.criticalIssues}
-- Warning Issues: ${summary.warningIssues}
-- Info Issues: ${summary.infoIssues}
-
-Download your reports:
-- PDF Report: ${reportUrls.pdfUrl}
-- CSV Data: ${reportUrls.csvUrl}
-
-Thank you for making the web more accessible for everyone!
-
-Best regards,
-The A11yscan Team
-    `;
-    
-    // Debug logging
-    logger.debug(`Sending email to: ${to}`);
-    logger.debug(`Email subject: WCAG Accessibility Scan Results for ${hostname}`);
-    
-    // Send email
-    const info = await smtpClient.sendMail({
-      from: process.env.EMAIL_FROM,
-      to: to,
-      subject: `WCAG Accessibility Scan Results for ${hostname}`,
-      text: textEmail,
-      html: htmlEmail
-    });
-    
-    logger.info(`✉️ Results email sent to ${to} for scan ${scanId} (Message ID: ${info.messageId})`);
-    return true;
-  } catch (error) {
-    logger.error(`❌ Error sending results email: ${error.message}`);
-    logger.error(`Stack trace: ${error.stack}`);
-    return false;
-  }
+  // Skip sending emails
+  logger.info(`Email sending disabled - would have sent results for ${url} to ${to}`);
+  return true;
 }
 
 /**
@@ -393,27 +247,15 @@ async function checkCompletedScans() {
           continue;
         }
         
-        // Get URLs for reports (either via R2 or direct local URLs)
-        let pdfUrl, csvUrl;
-        try {
-          pdfUrl = await uploadReportToR2(report_pdf, scan_id, 'pdf');
-          csvUrl = await uploadReportToR2(report_csv, scan_id, 'csv');
-        } catch (uploadError) {
-          logger.error(`❌ Failed to get report URLs: ${uploadError.message}`);
-          logger.info('Falling back to direct file URLs...');
-          pdfUrl = getLocalFileUrl(report_pdf);
-          csvUrl = getLocalFileUrl(report_csv);
-        }
+        // Get URLs for reports (now just local URLs)
+        const pdfUrl = getLocalFileUrl(report_pdf);
+        const csvUrl = getLocalFileUrl(report_csv);
         
-        // Send results email
-        const emailSent = await sendResultsEmail(requester_email, url, scan_id, {
-          pdfUrl,
-          csvUrl
-        });
+        // Skip email sending but mark as processed
+        logger.info(`📄 Reports available at PDF: ${pdfUrl}, CSV: ${csvUrl}`);
         
-        // Mark report as sent regardless of email success
-        // This prevents the same scan from being processed repeatedly
-        await markScanAsProcessed(scan_id, emailSent);
+        // Mark as processed
+        await markScanAsProcessed(scan_id, true);
         
         logger.info(`✅ Successfully processed scan ${scan_id} for ${url}`);
       } catch (error) {
